@@ -20,15 +20,26 @@ getTracks = (function () {
     }
   }
 
-  function scrollToLoadAll (callback) {
-    var position = window.scrollY
-    var checker = setInterval(function () { 
-      window.scrollTo(9999999999999, 9999999999999)
-      if (position === window.scrollY) {
+  function runInNewWindow (location, callback) {
+    var newWindow = window.open(location)
+    setTimeout(function () {
+      if (newWindow.document.readyState != 'loading'){
+        callback(newWindow)
+      } else {
+        newWindow.document.addEventListener('load', () => callback(newWindow))
+      }
+    }, 100)
+  }
+
+  function scrollToLoadAll (callback, currentWindow = window) {
+    var position = currentWindow.scrollY
+    var checker = currentWindow.setInterval(function () { 
+      currentWindow.scrollTo(9999999999999, 9999999999999)
+      if (position === currentWindow.scrollY) {
         clearInterval(checker)
         callback()
       } else {
-        position = window.scrollY
+        position = currentWindow.scrollY
       }
     }, SCROLL_LOADING_TIME)
   }
