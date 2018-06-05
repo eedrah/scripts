@@ -1,0 +1,16 @@
+#! /bin/bash
+set -e
+set -o pipefail
+IFS="$(printf '\n\t')"
+
+case "$1" in
+    '')
+        echo Please specify file
+        exit 1
+        ;;
+esac
+set -u
+
+while IFS=' ' read -r number url || [[ "$number" ]]; do
+    $GWD/scripts/music/download-from-url --prefix $number $url
+done < "$1"

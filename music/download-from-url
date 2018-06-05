@@ -1,0 +1,39 @@
+#! /bin/bash
+set -e
+set -o pipefail
+IFS="$(printf '\n\t')"
+
+POSITIONAL=()
+while
+    key="$1"
+    case $key in
+        '') 
+            echo Please specify the url
+            exit 1 ;;
+        --prefix)
+            PREFIX="$2"
+            shift; shift ;;
+        -*)
+            echo "Unknown option: $1"
+            exit 1 ;;
+        *)
+            POSITIONAL+=("$1")
+            shift ;;
+    esac
+    [[ $# -gt 0 ]]
+do true; done
+set -- "${POSITIONAL[@]}"
+
+exec 5>&1
+
+[[ $PREFIX ]] && PREFIX+=' '
+title="$PREFIX%(title)s.%(ext)s"
+data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --output "$title" "$*" | tee >(cat - >&5) )
+
+while read ffmpeg destination filename; do
+    if [[ "$ffmpeg" == "[ffmpeg]" ]] && [[ "$destination" == "Destination:" ]]; then
+        newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
+        mv "$filename" "$newFilename"
+    fi
+done <<< "$data"
+
