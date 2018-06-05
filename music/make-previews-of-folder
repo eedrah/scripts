@@ -1,0 +1,19 @@
+#! /bin/bash
+set -e
+set -o pipefail
+IFS="$(printf '\n\t')"
+case "$1" in
+    '')
+        echo Please specify folder
+        exit 1
+        ;;
+esac
+set -u
+
+mkdir -p previews
+
+for file in $(ls "$1"); do
+    input="$1/$file"
+    output="previews/$file"
+    ffmpeg -i "$input" -ss 00:01:30 -t 00:00:30 "$output"
+done
