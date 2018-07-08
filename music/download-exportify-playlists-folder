@@ -1,0 +1,23 @@
+#! /bin/bash
+set -eo pipefail
+IFS="$(printf '\n\t')"
+# pip install csvkit
+
+PLAYLISTS_FOLDER="$1"
+
+set -u
+
+for playlistCsv in $(ls *.csv); do
+    playlist="${playlistCsv%.*}"
+    mkdir -p $playlist
+    cd $playlist
+
+    for line in $(csvcut -c "Track Name","Artist Name" "../$playlistCsv" | tail -n +2); do
+        track=$(echo $line | csvcut -c 1)
+        artist=$(echo $line | csvcut -c 2)
+
+        ee-download-song $track $artist
+    done
+
+    cd ..
+done
