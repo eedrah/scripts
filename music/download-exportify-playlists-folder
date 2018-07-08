@@ -26,4 +26,4 @@ for playlistCsv in $(ls *.csv); do
     mv "$playlistCsv" playlists-metadata
 done
 
-tree --charset ascii -o playlists-metadata/all-files.txt
+tree -N --charset ascii -o playlists-metadata/all-files.txt
