@@ -7,17 +7,23 @@ PLAYLISTS_FOLDER="$1"
 
 set -u
 
+mkdir -p playlists-metadata
+
 for playlistCsv in $(ls *.csv); do
     playlist="${playlistCsv%.*}"
-    mkdir -p $playlist
-    cd $playlist
+    mkdir -p "$playlist"
+    cd "$playlist"
 
     for line in $(csvcut -c "Track Name","Artist Name" "../$playlistCsv" | tail -n +2); do
-        track=$(echo $line | csvcut -c 1)
-        artist=$(echo $line | csvcut -c 2)
+        track="$(echo $line | csvcut -c 1)"
+        artist="$(echo $line | csvcut -c 2)"
 
         ee-download-song $track $artist
     done
 
     cd ..
+
+    mv "$playlistCsv" playlists-metadata
 done
+
+tree --charset ascii -o playlists-metadata/all-files.txt
