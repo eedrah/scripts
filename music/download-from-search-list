@@ -1,0 +1,7 @@
+#! /bin/bash
+set -eo pipefail
+IFS="$(printf '\n\t')"
+
+for search in $(cat "$1"); do
+    ee-download-song $search
+done
