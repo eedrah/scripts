@@ -1,0 +1,64 @@
+#! /bin/bash
+#set -eo pipefail
+#IFS="$(printf '\n\t')"
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+#set -u
+
+DB=test.db
+CSV=songs.csv
+PLAYLIST_FOLDER=playlists
+
+fixUnescapedQuotesInCsv() {
+	perl -n -i -e 's/(?<!",)"(?!,")/""/g; s/^""/"/g; s/""$/"/g; print;' "$1"
+}
+
+createSongsTable() {
+	sqlite3 "$DB" <<-EOF
+	CREATE TABLE songs (
+		playlist TEXT NOT NULL,
+		filename TEXT NULL,
+		youtubeUrl TEXT,
+		youtubeTitle TEXT,
+		spotifyUri TEXT,
+		title TEXT,
+		artist TEXT,
+		album TEXT
+	);
+	EOF
+}
+
+importPlaylistCsvToSongs() {
+	filename=$(basename -- "$1")
+	playlist="${filename%.*}"
+
+	sqlite3 "$DB" <<-EOF
+	.mode csv
+	.import "$1" import
+
+	INSERT INTO songs 
+		(playlist, filename, youtubeUrl, youtubeTitle, spotifyUri, title, artist, album)
+	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeUrl, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name"
+	FROM import;
+
+	DROP TABLE import;
+	EOF
+}
+
+exportSongsToCsv() {
+	sqlite3 "$DB" <<-EOF
+	.headers on
+	.mode csv
+	.output "$1"
+	SELECT * FROM songs;
+	EOF
+}
+
+createCsv() {
+	createSongsTable
+	for filepath in $(ls "$PLAYLIST_FOLDER"/*.csv); do
+		fixUnescapedQuotesInCsv "$filepath"
+		importPlaylistCsvToSongs "$filepath"
+	done
+	exportSongsToCsv "$CSV"
+}
