@@ -14,6 +14,18 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 DB=songs.db
 CSV=songs.csv
 
+md5hash() {
+	if (type -a md5 &>/dev/null); then
+		md5 -qs "$1"
+	else
+		echo -n "$1" | md5sum | cut -f 1 -d ' '
+	fi
+}
+if [[ 098f6bcd4621d373cade4e832627b4f6 != $(md5hash test) ]]; then
+	echo Hashing test failed! Received $(md5hash test)
+	exit 1
+fi
+
 fixUnescapedQuotesInCsv() {
 	perl -n -i -e 's/(?<!",)"(?!,")/""/g; s/^""/"/g; s/""$/"/g; print;' "$1"
 }
@@ -23,7 +35,7 @@ createDb() {
 	CREATE TABLE songs (
 		playlist TEXT,
 		filename TEXT,
-		youtubeUrl TEXT,
+		youtubeId TEXT,
 		youtubeTitle TEXT,
 		spotifyUri TEXT,
 		title TEXT,
@@ -45,8 +57,8 @@ importPlaylistCsvsToDb() {
 	.import "$1" import
 
 	INSERT INTO songs 
-		(playlist, filename, youtubeUrl, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, infoHash)
-	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeUrl, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS infoHash
+		(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, infoHash)
+	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS infoHash
 	FROM import;
 
 	DROP TABLE import;
@@ -95,11 +107,25 @@ whereIdIsSelectColumn() {
 downloadSongFromDbWithId() {
 	title=$(whereIdIsSelectColumn $1 title)
 	artist=$(whereIdIsSelectColumn $1 artist)
-	for column in playlist filename youtubeUrl youtubeTitle spotifyUri title artist album startTime endTime infoHash; do
+	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime infoHash; do
 		declare $column="$(whereIdIsSelectColumn $1 $column)"
 	done
 	echo "$title"
-	[ -z "$youtubeUrl" ] && echo "Without youtubeUrl"
+	[ -z "$youtubeId" ] && echo "Without youtubeId"
+
+	exec 5>&1
+	data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --add-metadata --output '%(title)s.%(ext)s' --default-search ytsearch "lyrics $title $artist" | tee >(cat - >&5) )
+	while IFS=' ' read -r tool step info; do
+		if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
+			#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
+			#mv "$filename" "$newFilename"
+			dlFileName="$info"
+			echo "Filename: $dlFileName"
+		elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
+			dlYoutubeId=${step%:}
+			echo "Id: $dlYoutubeId"
+		fi
+	done <<< "$data"
 }
 
 case "$1" in
@@ -115,11 +141,14 @@ case "$1" in
 	csvToDb)
 		csvToDb
 		;;
-	downloadFromDb)
+	downloadFromZip)
+		shift
+		createCsvFromZip "$1"
+		csvToDb
 		downloadFromDb
 		;;
 	*)
-		echo Please specify: create, csvToDb, dbToCsv
+		echo Please specify: create, csvToDb, dbToCsv, downloadFromZip
 		exit 1 ;;
 esac
 
