@@ -1,34 +1,42 @@
 #! /bin/bash
-#set -eo pipefail
-#IFS="$(printf '\n\t')"
+set -eo pipefail
+IFS="$(printf '\n\t')"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 #set -u
 
-DB=test.db
+# ---- Definitions ----
+# DB - sqlite db
+# CSV - the CSV list of all the songs and what playlists they are in
+# zip - From exportify, contains individual CSVs of the playlists
+# PlaylistCSVs - the files inside the zip
+
+DB=songs.db
 CSV=songs.csv
-PLAYLIST_FOLDER=playlists
 
 fixUnescapedQuotesInCsv() {
 	perl -n -i -e 's/(?<!",)"(?!,")/""/g; s/^""/"/g; s/""$/"/g; print;' "$1"
 }
 
-createSongsTable() {
+createDb() {
 	sqlite3 "$DB" <<-EOF
 	CREATE TABLE songs (
-		playlist TEXT NOT NULL,
-		filename TEXT NULL,
+		playlist TEXT,
+		filename TEXT,
 		youtubeUrl TEXT,
 		youtubeTitle TEXT,
 		spotifyUri TEXT,
 		title TEXT,
 		artist TEXT,
-		album TEXT
+		album TEXT,
+		startTime TEXT,
+		endTime TEXT,
+		infoHash TEXT
 	);
 	EOF
 }
 
-importPlaylistCsvToSongs() {
+importPlaylistCsvsToDb() {
 	filename=$(basename -- "$1")
 	playlist="${filename%.*}"
 
@@ -37,28 +45,81 @@ importPlaylistCsvToSongs() {
 	.import "$1" import
 
 	INSERT INTO songs 
-		(playlist, filename, youtubeUrl, youtubeTitle, spotifyUri, title, artist, album)
-	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeUrl, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name"
+		(playlist, filename, youtubeUrl, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, infoHash)
+	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeUrl, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS infoHash
 	FROM import;
 
 	DROP TABLE import;
 	EOF
 }
 
-exportSongsToCsv() {
+dbToCsv() {
 	sqlite3 "$DB" <<-EOF
 	.headers on
 	.mode csv
-	.output "$1"
+	.output "$CSV"
 	SELECT * FROM songs;
 	EOF
 }
 
-createCsv() {
-	createSongsTable
-	for filepath in $(ls "$PLAYLIST_FOLDER"/*.csv); do
+createCsvFromZip() {
+	createDb
+	tempFolder=$(mktemp -d)
+	echo "Using temp dir $tempFolder"
+	unzip "$1" -d "$tempFolder"
+	for filepath in $(ls "$tempFolder"/*.csv); do
 		fixUnescapedQuotesInCsv "$filepath"
-		importPlaylistCsvToSongs "$filepath"
+		importPlaylistCsvsToDb "$filepath"
 	done
-	exportSongsToCsv "$CSV"
+	dbToCsv
+	rm "$DB"
 }
+
+csvToDb() {
+	sqlite3 "$DB" <<-EOF
+	.mode csv
+	.import "$CSV" songs
+	EOF
+}
+
+downloadFromDb() {
+	for id in $(sqlite3 "$DB" "SELECT rowid FROM songs;"); do
+		downloadSongFromDbWithId $id
+	done
+}
+
+whereIdIsSelectColumn() {
+	sqlite3 "$DB" "SELECT \"$2\" FROM songs WHERE rowid = \"$1\";"
+}
+
+downloadSongFromDbWithId() {
+	title=$(whereIdIsSelectColumn $1 title)
+	artist=$(whereIdIsSelectColumn $1 artist)
+	for column in playlist filename youtubeUrl youtubeTitle spotifyUri title artist album startTime endTime infoHash; do
+		declare $column="$(whereIdIsSelectColumn $1 $column)"
+	done
+	echo "$title"
+	[ -z "$youtubeUrl" ] && echo "Without youtubeUrl"
+}
+
+case "$1" in
+	'')
+		;;
+	create)
+		shift
+		createCsvFromZip "$1"
+		;;
+	dbToCsv)
+		dbToCsv
+		;;
+	csvToDb)
+		csvToDb
+		;;
+	downloadFromDb)
+		downloadFromDb
+		;;
+	*)
+		echo Please specify: create, csvToDb, dbToCsv
+		exit 1 ;;
+esac
+
