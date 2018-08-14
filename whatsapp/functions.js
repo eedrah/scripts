@@ -16,11 +16,10 @@ function sendMessage(message) {
 
 function sendMessageWithInterval(message, seconds) {
   const jitter = 0.2
-  sendMessage(message)
-  setInterval(
-    () => sendMessage(message),
-    seconds * 1000 * (1 + jitter - 2 * jitter * Math.random())
-  )
+  const loop = () => {
+    sendMessage(message)
+    setTimeout(loop, seconds * 1000 * (1 + jitter - 2 * jitter * Math.random()))
+  }
 }
 
 function sendMessagesWithInterval(arrayOfMessages, seconds) {
@@ -28,7 +27,9 @@ function sendMessagesWithInterval(arrayOfMessages, seconds) {
   arrayOfMessages.forEach((message, index) => {
     setTimeout(
       () => sendMessage(message),
-      index * seconds * 1000 * (1 + jitter - 2 * jitter * Math.random())
+      index === 0
+        ? 0
+        : seconds * 1000 * (index + jitter - 2 * jitter * Math.random())
     )
   })
 }
