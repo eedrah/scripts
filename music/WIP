@@ -13,6 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 DB=songs.db
 CSV=songs.csv
+FOLDER=playlists
 
 if (type -a md5 &>/dev/null); then
 	md5String() {
@@ -83,6 +84,8 @@ dbToCsv() {
 	.output "$CSV"
 	SELECT * FROM songs;
 	EOF
+
+	rm "$DB"
 }
 
 createCsvFromZip() {
@@ -95,7 +98,6 @@ createCsvFromZip() {
 		importPlaylistCsvsToDb "$filepath"
 	done
 	dbToCsv
-	rm "$DB"
 }
 
 csvToDb() {
@@ -103,12 +105,21 @@ csvToDb() {
 	.mode csv
 	.import "$CSV" songs
 	EOF
+
+	rm "$CSV"
 }
 
 downloadFromDb() {
+	mkdir -p "$FOLDER"
 	for id in $(sqlite3 "$DB" "SELECT rowid FROM songs;"); do
 		downloadSongFromDbWithId $id
 	done
+}
+
+downloadFromCsv() {
+	csvToDb
+	downloadFromDb
+	dbToCsv
 }
 
 whereIdIsSelectColumn() {
@@ -150,12 +161,13 @@ downloadSongFromDbWithId() {
 	whereIdIsUpdateColumn $1 fileHash "$(md5File "${dlFilename}")"
 
 	whereIdIsUpdateColumn $1 infoHash "$(calculateInfoHashWithId $1)"
+
+	mkdir -p "$FOLDER/$playlist"
+	mv "$dlFilename" "$FOLDER/$playlist/$dlFilename"
 }
 
 case "$1" in
-	'')
-		;;
-	create)
+	createCsvFromZip)
 		shift
 		createCsvFromZip "$1"
 		;;
@@ -168,8 +180,11 @@ case "$1" in
 	downloadFromZip)
 		shift
 		createCsvFromZip "$1"
-		csvToDb
-		downloadFromDb
+		downloadFromCsv
+		;;
+	downloadFromCsv)
+		shift
+		downloadFromCsv
 		;;
 	downloadFromDb)
 		shift
@@ -180,7 +195,7 @@ case "$1" in
 		calculateInfoHashWithId "$1"
 		;;
 	*)
-		echo Please specify: create, csvToDb, dbToCsv, downloadFromZip
+		echo Please specify: createCsvFromZip, csvToDb, dbToCsv, downloadFromZip, downloadFromCsv, downloadFromDb
 		exit 1 ;;
 esac
 
