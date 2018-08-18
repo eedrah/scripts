@@ -138,20 +138,25 @@ downloadSongFromDbWithId() {
 	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime searchLyrics infoHash fileHash; do
 		declare $column="$(whereIdIsSelectColumn $1 $column)"
 	done
-	echo "$title"
-	[ -z "$youtubeId" ] && echo "Without youtubeId"
+	#[ -z "$youtubeId" ] && echo "Without youtubeId"
 
-	exec 5>&1
-	data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$title' -metadata artist='$artist'" --output '%(title)s.%(ext)s' --default-search ytsearch "${searchLyrics:+lyrics }$title $artist" | tee >(cat - >&5) )
+	idTitle="${title//\'/}"
+	idArtist="${artist//\'/}"
+	echo "Will save with ID3 tag with title: '$idTitle' and artist: '$idArtist'"
+
+	searchTerm="${searchLyrics:+lyrics }${title//:/} ${artist//:/}"
+	echo "Searching for: '$searchTerm'"
+
+	data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$searchTerm" )
 	while IFS=' ' read -r tool step info; do
 		if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
 			#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
 			#mv "$filename" "$newFilename"
 			dlFilename="$info"
-			echo "Filename: $dlFilename"
+			echo "Saved file: '$dlFilename'"
 		elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
 			dlYoutubeId=${step%:}
-			echo "Id: $dlYoutubeId"
+			echo "From Youtube Id: $dlYoutubeId"
 		fi
 	done <<< "$data"
 
