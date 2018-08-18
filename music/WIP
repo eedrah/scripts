@@ -42,19 +42,19 @@ fixUnescapedQuotesInCsv() {
 createDb() {
 	sqlite3 "$DB" <<-EOF
 	CREATE TABLE songs (
-		playlist TEXT,
-		filename TEXT,
-		youtubeId TEXT,
-		youtubeTitle TEXT,
-		spotifyUri TEXT,
-		title TEXT,
-		artist TEXT,
-		album TEXT,
 		startTime TEXT,
 		endTime TEXT,
 		searchLyrics TEXT,
+		youtubeTitle TEXT,
+		playlist TEXT,
+		title TEXT,
+		artist TEXT,
+		album TEXT,
+		filename TEXT,
+		spotifyUri TEXT,
 		infoHash TEXT,
-		fileHash TEXT
+		fileHash TEXT,
+		youtubeId TEXT
 	);
 	EOF
 }
