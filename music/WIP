@@ -14,15 +14,24 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 DB=songs.db
 CSV=songs.csv
 
-md5hash() {
-	if (type -a md5 &>/dev/null); then
+if (type -a md5 &>/dev/null); then
+	md5String() {
 		md5 -qs "$1"
-	else
+	}
+	md5File() {
+		md5 -q "$1"
+	}
+else
+	md5String() {
 		echo -n "$1" | md5sum | cut -f 1 -d ' '
-	fi
-}
-if [[ 098f6bcd4621d373cade4e832627b4f6 != $(md5hash test) ]]; then
-	echo Hashing test failed! Received $(md5hash test)
+	}
+	md5File() {
+		echo Not yet implemented.
+		exit 1
+	}
+fi
+if [ 098f6bcd4621d373cade4e832627b4f6 != $(md5String test) ] || [ 098f6bcd4621d373cade4e832627b4f6 != $(md5File <(echo -n test)) ]; then
+	echo Hashing test failed! Received string $(md5String test) and file hash $(md5File <(echo -n test))
 	exit 1
 fi
 
@@ -43,7 +52,9 @@ createDb() {
 		album TEXT,
 		startTime TEXT,
 		endTime TEXT,
-		infoHash TEXT
+		searchLyrics TEXT,
+		infoHash TEXT,
+		fileHash TEXT
 	);
 	EOF
 }
@@ -57,8 +68,8 @@ importPlaylistCsvsToDb() {
 	.import "$1" import
 
 	INSERT INTO songs 
-		(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, infoHash)
-	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS infoHash
+		(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, searchLyrics, infoHash, fileHash)
+	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, 1 AS searchLyrics, "" AS infoHash, "" AS fileHash
 	FROM import;
 
 	DROP TABLE import;
@@ -104,28 +115,41 @@ whereIdIsSelectColumn() {
 	sqlite3 "$DB" "SELECT \"$2\" FROM songs WHERE rowid = \"$1\";"
 }
 
+whereIdIsUpdateColumn() {
+	sqlite3 "$DB" "UPDATE songs SET \"$2\"='$3' WHERE rowid = \"$1\";"
+}
+
+calculateInfoHashWithId() {
+	md5String "$(sqlite3 "$DB" "SELECT playlist, youtubeId, spotifyUri, title, artist, album, startTime, endTime, searchLyrics FROM songs WHERE rowid = \"$1\";")"
+}
+
 downloadSongFromDbWithId() {
-	title=$(whereIdIsSelectColumn $1 title)
-	artist=$(whereIdIsSelectColumn $1 artist)
-	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime infoHash; do
+	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime searchLyrics infoHash fileHash; do
 		declare $column="$(whereIdIsSelectColumn $1 $column)"
 	done
 	echo "$title"
 	[ -z "$youtubeId" ] && echo "Without youtubeId"
 
 	exec 5>&1
-	data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --add-metadata --output '%(title)s.%(ext)s' --default-search ytsearch "lyrics $title $artist" | tee >(cat - >&5) )
+	data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$title' -metadata artist='$artist'" --output '%(title)s.%(ext)s' --default-search ytsearch "${searchLyrics:+lyrics }$title $artist" | tee >(cat - >&5) )
 	while IFS=' ' read -r tool step info; do
 		if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
 			#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
 			#mv "$filename" "$newFilename"
-			dlFileName="$info"
-			echo "Filename: $dlFileName"
+			dlFilename="$info"
+			echo "Filename: $dlFilename"
 		elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
 			dlYoutubeId=${step%:}
 			echo "Id: $dlYoutubeId"
 		fi
 	done <<< "$data"
+
+	whereIdIsUpdateColumn $1 filename "$dlFilename"
+	whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
+	whereIdIsUpdateColumn $1 youtubeTitle "${dlFilename%.mp3}"
+	whereIdIsUpdateColumn $1 fileHash "$(md5File "${dlFilename}")"
+
+	whereIdIsUpdateColumn $1 infoHash "$(calculateInfoHashWithId $1)"
 }
 
 case "$1" in
@@ -147,8 +171,23 @@ case "$1" in
 		csvToDb
 		downloadFromDb
 		;;
+	downloadFromDb)
+		shift
+		downloadFromDb
+		;;
+	test)
+		shift
+		calculateInfoHashWithId "$1"
+		;;
 	*)
 		echo Please specify: create, csvToDb, dbToCsv, downloadFromZip
 		exit 1 ;;
 esac
 
+# ==== Cases ====
+# CSV doesn't exist
+# Song added to spotify
+# Playlist added to spotify
+# Song added to CSV
+# Youtube link changed
+# Start or end time changed
