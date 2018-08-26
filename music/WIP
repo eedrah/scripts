@@ -138,37 +138,47 @@ downloadSongFromDbWithId() {
 	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime extraSearchTerm infoHash fileHash; do
 		declare $column="$(whereIdIsSelectColumn $1 $column)"
 	done
-	#[ -z "$youtubeId" ] && echo "Without youtubeId"
-
 	idTitle="${title//\'/}"
 	idArtist="${artist//\'/}"
-	echo "Will save with ID3 tag with title: '$idTitle' and artist: '$idArtist'"
-
-	searchTerm="${title//:/} ${artist//:/} $extraSearchTerm"
-	echo "Searching for: '$searchTerm'"
-
-	data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$searchTerm" )
-	while IFS=' ' read -r tool step info; do
-		if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
-			#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
-			#mv "$filename" "$newFilename"
-			dlFilename="$info"
-			echo "Saved file: '$dlFilename'"
-		elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
-			dlYoutubeId=${step%:}
-			echo "From Youtube Id: $dlYoutubeId"
-		fi
-	done <<< "$data"
-
-	whereIdIsUpdateColumn $1 filename "$dlFilename"
-	whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
-	whereIdIsUpdateColumn $1 youtubeTitle "${dlFilename%.mp3}"
-	whereIdIsUpdateColumn $1 fileHash "$(md5File "${dlFilename}")"
-
-	whereIdIsUpdateColumn $1 infoHash "$(calculateInfoHashWithId $1)"
-
+	filenameAndPath="$FOLDER/$playlist/$dlFilename"
 	mkdir -p "$FOLDER/$playlist"
-	mv "$dlFilename" "$FOLDER/$playlist/$dlFilename"
+
+	if [ $infoHash != "$(calculateInfoHashWithId $1)" ]; then
+		# Check if infohash is current - if not, redownload and save data
+		echo "Downloading and updating data for title: '$idTitle' and artist: '$idArtist'"
+
+		searchTerm="${title//:/} ${artist//:/} $extraSearchTerm"
+		echo "Searching for: '$searchTerm'"
+
+		data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$searchTerm" )
+		while IFS=' ' read -r tool step info; do
+			if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
+				#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
+				#mv "$filename" "$newFilename"
+				dlFilename="$info"
+				echo "Saved file: '$dlFilename'"
+			elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
+				dlYoutubeId=${step%:}
+				echo "From Youtube Id: $dlYoutubeId"
+			fi
+		done <<< "$data"
+
+		whereIdIsUpdateColumn $1 filename "$dlFilename"
+		whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
+		whereIdIsUpdateColumn $1 youtubeTitle "${dlFilename%.mp3}"
+		whereIdIsUpdateColumn $1 fileHash "$(md5File "$dlFilename")"
+
+		whereIdIsUpdateColumn $1 infoHash "$(calculateInfoHashWithId $1)"
+
+		mv "$dlFilename" "$filenameAndPath"
+	elif [ ! -f "$filename" ] && [ $fileHash != "$(md5File "$filename")" ]; then
+		# Check if file exists and filehash is current - if not, redownload from data
+		echo "Redownloading from saved data - title: '$idTitle' and artist: '$idArtist'"
+		data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' "$youtubeId" )
+	else
+		# File and info are up-to-date
+		echo "File up-to-date - title: '$idTitle' and artist: '$idArtist'"
+	fi
 }
 
 case "$1" in
