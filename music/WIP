@@ -46,6 +46,7 @@ createDb() {
 		startTime TEXT,
 		endTime TEXT,
 		extraSearchTerm TEXT,
+		shouldDownload TEXT,
 		youtubeTitle TEXT,
 		playlist TEXT,
 		title TEXT,
@@ -69,8 +70,8 @@ importPlaylistCsvsToDb() {
 	.import "$1" import
 
 	INSERT INTO songs 
-		(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, infoHash, fileHash)
-	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS extraSearchTerm, "" AS infoHash, "" AS fileHash
+		(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload, infoHash, fileHash)
+	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS extraSearchTerm, 1 AS shouldDownload, "" AS infoHash, "" AS fileHash
 	FROM import;
 
 	DROP TABLE import;
@@ -131,17 +132,17 @@ whereIdIsUpdateColumn() {
 }
 
 calculateInfoHashWithId() {
-	md5String "$(sqlite3 "$DB" "SELECT playlist, youtubeId, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm FROM songs WHERE rowid = \"$1\";")"
+	md5String "$(sqlite3 "$DB" "SELECT playlist, youtubeId, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload FROM songs WHERE rowid = \"$1\";")"
 }
 
 downloadSongFromDbWithId() {
-	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime extraSearchTerm infoHash fileHash; do
+	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime extraSearchTerm shouldDownload infoHash fileHash; do
 		declare $column="$(whereIdIsSelectColumn $1 $column)"
 	done
 	idTitle="${title//\'/}"
 	idArtist="${artist//\'/}"
-	filenameAndPath="$FOLDER/$playlist/$dlFilename"
-	mkdir -p "$FOLDER/$playlist"
+	filePath="$FOLDER/$playlist"
+	mkdir -p "$filePath"
 
 	if [ $infoHash != "$(calculateInfoHashWithId $1)" ]; then
 		# Check if infohash is current - if not, redownload and save data
@@ -163,15 +164,17 @@ downloadSongFromDbWithId() {
 			fi
 		done <<< "$data"
 
-		whereIdIsUpdateColumn $1 filename "$dlFilename"
 		whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
 		whereIdIsUpdateColumn $1 youtubeTitle "${dlFilename%.mp3}"
 		whereIdIsUpdateColumn $1 fileHash "$(md5File "$dlFilename")"
 
-		whereIdIsUpdateColumn $1 infoHash "$(calculateInfoHashWithId $1)"
+		infoHash="$(calculateInfoHashWithId $1)"
+		whereIdIsUpdateColumn $1 infoHash "$infoHash"
 
-		mv "$dlFilename" "$filenameAndPath"
-	elif [ ! -f "$filename" ] && [ $fileHash != "$(md5File "$filename")" ]; then
+		filename="${dlFilename%.mp3}-${infoHash:0:5}.mp3"
+		whereIdIsUpdateColumn $1 filename "$filename"
+		mv "$dlFilename" "$filePath/$filename"
+	elif [ ! -f "$filePath/$filename" ] && [ $fileHash != "$(md5File "$filename")" ]; then
 		# Check if file exists and filehash is current - if not, redownload from data
 		echo "Redownloading from saved data - title: '$idTitle' and artist: '$idArtist'"
 		data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' "$youtubeId" )
