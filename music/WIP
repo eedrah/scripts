@@ -187,8 +187,6 @@ downloadYoutubeAndExport_dlFilename_dlYoutubeId() {
 	set_dlFilename_dlYoutubeId_FromData() {
 		while IFS=' ' read -r tool step info; do
 			if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
-				#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
-				#mv "$filename" "$newFilename"
 				dlFilename="$info"
 				echo "Saved file: '$dlFilename'"
 			elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
@@ -199,8 +197,8 @@ downloadYoutubeAndExport_dlFilename_dlYoutubeId() {
 	}
 
 	sanitizeMoveAndExport_dlFilename() {
-		filename="${1//\'/}"
-		mv "$1" "$filename"
+		dlFilename="${1//\'/}"
+		mv "$1" "$dlFilename"
 	}
 
 	downloadedMetadata="$(downloadYoutube "$@")"
@@ -234,6 +232,7 @@ set -- "${POSITIONAL[@]}"
 case "$SOURCE" in
 	zip)
 		createCsvFromZip "$1"
+		shift
 		;;
 	gdrive)
 		downloadCsvFromGdrive
