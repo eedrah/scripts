@@ -108,6 +108,7 @@ csvToDb() {
 	EOF
 
 	rm "$CSV"
+	trap dbToCsv EXIT
 }
 
 downloadFromDb() {
@@ -120,7 +121,6 @@ downloadFromDb() {
 downloadFromCsv() {
 	csvToDb
 	downloadFromDb
-	dbToCsv
 }
 
 whereIdIsSelectColumn() {
@@ -144,25 +144,13 @@ downloadSongFromDbWithId() {
 	filePath="$FOLDER/$playlist"
 	mkdir -p "$filePath"
 
-	if [ $infoHash != "$(calculateInfoHashWithId $1)" ]; then
+	if [ "$infoHash" != "$(calculateInfoHashWithId $1)" ]; then
 		# Check if infohash is current - if not, redownload and save data
 		echo "Downloading and updating data for title: '$idTitle' and artist: '$idArtist'"
 
 		searchTerm="${title//:/} ${artist//:/} $extraSearchTerm"
 		echo "Searching for: '$searchTerm'"
-
-		data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$searchTerm" )
-		while IFS=' ' read -r tool step info; do
-			if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
-				#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
-				#mv "$filename" "$newFilename"
-				dlFilename="$info"
-				echo "Saved file: '$dlFilename'"
-			elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
-				dlYoutubeId=${step%:}
-				echo "From Youtube Id: $dlYoutubeId"
-			fi
-		done <<< "$data"
+		downloadYoutubeAndExport_dlFilename_dlYoutubeId --search "$searchTerm"
 
 		whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
 		whereIdIsUpdateColumn $1 youtubeTitle "${dlFilename%.mp3}"
@@ -174,46 +162,104 @@ downloadSongFromDbWithId() {
 		filename="${dlFilename%.mp3}-${infoHash:0:5}.mp3"
 		whereIdIsUpdateColumn $1 filename "$filename"
 		mv "$dlFilename" "$filePath/$filename"
-	elif [ ! -f "$filePath/$filename" ] && [ $fileHash != "$(md5File "$filename")" ]; then
+
+	elif [ ! -f "$filePath/$filename" ] && [ "$fileHash" != "$(md5File "$filePath/$filename")" ]; then
 		# Check if file exists and filehash is current - if not, redownload from data
 		echo "Redownloading from saved data - title: '$idTitle' and artist: '$idArtist'"
-		data=$( youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' "$youtubeId" )
+		downloadYoutubeAndExport_dlFilename_dlYoutubeId --id "$youtubeId"
+		mv "$dlFilename" "$filePath/$filename"
+
 	else
 		# File and info are up-to-date
 		echo "File up-to-date - title: '$idTitle' and artist: '$idArtist'"
 	fi
 }
 
-case "$1" in
-	createCsvFromZip)
-		shift
+downloadYoutubeAndExport_dlFilename_dlYoutubeId() {
+	downloadYoutube() {
+		if [ "$1" == "--search" ]; then
+			youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$2" 
+		elif [ "$1" == "--id" ]; then
+			youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' "$2" 
+		fi
+	}
+
+	set_dlFilename_dlYoutubeId_FromData() {
+		while IFS=' ' read -r tool step info; do
+			if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
+				#newFilename=$( echo "$filename" | sed -r -e 's/ ?\(?lyrics\)? ?/ /i' -e 's/^ *//;s/ *\.mp3$/.mp3/' )
+				#mv "$filename" "$newFilename"
+				dlFilename="$info"
+				echo "Saved file: '$dlFilename'"
+			elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
+				dlYoutubeId=${step%:}
+				echo "From Youtube Id: $dlYoutubeId"
+			fi
+		done <<< "$1"
+	}
+
+	sanitizeMoveAndExport_dlFilename() {
+		filename="${1//\'/}"
+		mv "$1" "$filename"
+	}
+
+	downloadedMetadata="$(downloadYoutube "$@")"
+	set_dlFilename_dlYoutubeId_FromData "$downloadedMetadata"
+	sanitizeMoveAndExport_dlFilename "$dlFilename"
+}
+
+SOURCE=csv
+OUTPUT=csv
+POSITIONAL=()
+while
+    key="$1"
+    case $key in
+		--source)
+			SOURCE="$2"
+			shift; shift ;;
+        --output)
+            OUTPUT="$2"
+            shift; shift ;;
+        -*)
+            echo "Unknown option: $1"
+            exit 1 ;;
+        *)
+            POSITIONAL+=("$1")
+            shift ;;
+    esac
+    [[ $# -gt 0 ]]
+do true; done
+set -- "${POSITIONAL[@]}"
+
+case "$SOURCE" in
+	zip)
 		createCsvFromZip "$1"
 		;;
-	dbToCsv)
-		dbToCsv
+	gdrive)
+		downloadCsvFromGdrive
 		;;
-	csvToDb)
-		csvToDb
-		;;
-	downloadFromZip)
-		shift
-		createCsvFromZip "$1"
-		downloadFromCsv
-		;;
-	downloadFromCsv)
-		shift
-		downloadFromCsv
-		;;
-	downloadFromDb)
-		shift
-		downloadFromDb
-		;;
-	test)
-		shift
-		calculateInfoHashWithId "$1"
+	csv)
 		;;
 	*)
-		echo Please specify: createCsvFromZip, csvToDb, dbToCsv, downloadFromZip, downloadFromCsv, downloadFromDb
+		echo Not a valid source
+		exit 1
+		;;
+esac
+
+case "$OUTPUT" in
+	sql|sqlite|sqlite3)
+		;;
+	csv)
+		;;
+esac
+
+case "$1" in
+	download)
+		shift
+		downloadFromCsv
+		;;
+	*)
+		echo Please specify: download
 		exit 1 ;;
 esac
 
