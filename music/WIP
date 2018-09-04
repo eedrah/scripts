@@ -146,10 +146,9 @@ downloadSongFromDbWithId() {
 
 	if [ "$infoHash" != "$(calculateInfoHashWithId $1)" ]; then
 		# Check if infohash is current - if not, redownload and save data
-		echo "Downloading and updating data for title: '$idTitle' and artist: '$idArtist'"
+		echo -n "Downloading - title: '$idTitle' and artist: '$idArtist'........ "
 
 		searchTerm="${title//:/} ${artist//:/} $extraSearchTerm"
-		echo "Searching for: '$searchTerm'"
 		downloadYoutubeAndExport_dlFilename_dlYoutubeId --search "$searchTerm"
 
 		whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
@@ -165,7 +164,7 @@ downloadSongFromDbWithId() {
 
 	elif [ ! -f "$filePath/$filename" ] && [ "$fileHash" != "$(md5File "$filePath/$filename")" ]; then
 		# Check if file exists and filehash is current - if not, redownload from data
-		echo "Redownloading from saved data - title: '$idTitle' and artist: '$idArtist'"
+		echo -n "Redownloading - title: '$idTitle' and artist: '$idArtist'........ "
 		downloadYoutubeAndExport_dlFilename_dlYoutubeId --id "$youtubeId"
 		mv "$dlFilename" "$filePath/$filename"
 
@@ -188,10 +187,9 @@ downloadYoutubeAndExport_dlFilename_dlYoutubeId() {
 		while IFS=' ' read -r tool step info; do
 			if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
 				dlFilename="$info"
-				echo "Saved file: '$dlFilename'"
+				echo "Downloaded: '$dlFilename'"
 			elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
 				dlYoutubeId=${step%:}
-				echo "From Youtube Id: $dlYoutubeId"
 			fi
 		done <<< "$1"
 	}
