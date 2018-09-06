@@ -114,7 +114,7 @@ csvToDb() {
 downloadFromDb() {
 	mkdir -p "$FOLDER"
 	for id in $(sqlite3 "$DB" "SELECT rowid FROM songs;"); do
-		downloadSongFromDbWithId $id
+		downloadSongFromDbWithId $id || :
 	done
 }
 
@@ -140,7 +140,9 @@ downloadSongFromDbWithId() {
 		declare $column="$(whereIdIsSelectColumn $1 $column)"
 	done
 	idTitle="${title//\'/}"
+	idTitle="${idTitle//\"/}"
 	idArtist="${artist//\'/}"
+	idArtist="${idArtist//\"/}"
 	filePath="$FOLDER/$playlist"
 	mkdir -p "$filePath"
 
@@ -148,7 +150,7 @@ downloadSongFromDbWithId() {
 		# Check if infohash is current - if not, redownload and save data
 		echo -n "Downloading - title: '$idTitle' and artist: '$idArtist'........ "
 
-		searchTerm="${title//:/} ${artist//:/} $extraSearchTerm"
+		searchTerm="${idTitle//:/} ${idArtist//:/} $extraSearchTerm"
 		downloadYoutubeAndExport_dlFilename_dlYoutubeId --search "$searchTerm"
 
 		whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
@@ -162,7 +164,8 @@ downloadSongFromDbWithId() {
 		whereIdIsUpdateColumn $1 filename "$filename"
 		mv "$dlFilename" "$filePath/$filename"
 
-	elif [ ! -f "$filePath/$filename" ] && [ "$fileHash" != "$(md5File "$filePath/$filename")" ]; then
+	#elif [ ! -f "$filePath/$filename" ] || [ "$fileHash" != "$(md5File "$filePath/$filename")" ]; then # filename now includes hash
+	elif [ ! -f "$filePath/$filename" ]; then
 		# Check if file exists and filehash is current - if not, redownload from data
 		echo -n "Redownloading - title: '$idTitle' and artist: '$idArtist'........ "
 		downloadYoutubeAndExport_dlFilename_dlYoutubeId --id "$youtubeId"
