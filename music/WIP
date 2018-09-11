@@ -1,173 +1,253 @@
 #! /bin/bash
+# shellcheck disable=SC2030 disable=SC2031
 set -eo pipefail
 IFS="$(printf '\n\t')"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 #set -u
 
-# ---- Definitions ----
-# DB - sqlite db
-# CSV - the CSV list of all the songs and what playlists they are in
-# zip - From exportify, contains individual CSVs of the playlists
-# PlaylistCSVs - the files inside the zip
-
-DB=songs.db
-CSV=songs.csv
-FOLDER=playlists
-
+# ==== Hashing test ====
 if (type -a md5 &>/dev/null); then
-	md5String() {
+	md5String() (
 		md5 -qs "$1"
-	}
-	md5File() {
+	)
+	md5File() (
 		md5 -q "$1"
-	}
+	)
 else
-	md5String() {
+	md5String() (
 		echo -n "$1" | md5sum | cut -f 1 -d ' '
-	}
-	md5File() {
+	)
+	md5File() (
 		echo Not yet implemented.
 		exit 1
-	}
+	)
 fi
-if [ 098f6bcd4621d373cade4e832627b4f6 != $(md5String test) ] || [ 098f6bcd4621d373cade4e832627b4f6 != $(md5File <(echo -n test)) ]; then
-	echo Hashing test failed! Received string $(md5String test) and file hash $(md5File <(echo -n test))
+if [ 098f6bcd4621d373cade4e832627b4f6 != "$(md5String test)" ] || [ 098f6bcd4621d373cade4e832627b4f6 != "$(md5File <(echo -n test))" ]; then
+	echo "Hashing test failed! Received string $(md5String test) and file hash $(md5File <(echo -n test))"
 	exit 1
 fi
 
-fixUnescapedQuotesInCsv() {
-	perl -n -i -e 's/(?<!",)"(?!,")/""/g; s/^""/"/g; s/""$/"/g; print;' "$1"
-}
+# ==== Functions ====
+convertFromXToDb() (
+	FROM="$1"
+	DB="$2"
 
-createDb() {
-	sqlite3 "$DB" <<-EOF
-	CREATE TABLE songs (
-		startTime TEXT,
-		endTime TEXT,
-		extraSearchTerm TEXT,
-		shouldDownload TEXT,
-		youtubeTitle TEXT,
-		playlist TEXT,
-		title TEXT,
-		artist TEXT,
-		album TEXT,
-		filename TEXT,
-		spotifyUri TEXT,
-		infoHash TEXT,
-		fileHash TEXT,
-		youtubeId TEXT
-	);
-	EOF
-}
+	csvToDb() (
+		CSV="$1"
+		DB="$2"
 
-importPlaylistCsvsToDb() {
-	filename=$(basename -- "$1")
-	playlist="${filename%.*}"
+		sqlite3 "$DB" <<-EOF
+			.mode csv
+			.import "$CSV" songs
+		EOF
+		rm "$CSV"
+		#trap dbToCsv EXIT
+	)
 
-	sqlite3 "$DB" <<-EOF
-	.mode csv
-	.import "$1" import
+	zipToDb() (
+		ZIP="$1"
+		DB="$2"
 
-	INSERT INTO songs 
-		(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload, infoHash, fileHash)
-	SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS extraSearchTerm, 1 AS shouldDownload, "" AS infoHash, "" AS fileHash
-	FROM import;
+		createEmptyDb() (
+			sqlite3 "$1" <<-EOF
+				CREATE TABLE songs (
+				startTime TEXT,
+				endTime TEXT,
+				extraSearchTerm TEXT,
+				shouldDownload TEXT,
+				youtubeTitle TEXT,
+				playlist TEXT,
+				title TEXT,
+				artist TEXT,
+				album TEXT,
+				filename TEXT,
+				spotifyUri TEXT,
+				infoHash TEXT,
+				fileHash TEXT,
+				youtubeId TEXT
+				);
+			EOF
+		)
 
-	DROP TABLE import;
-	EOF
-}
+		fixUnescapedQuotesInCsv() (
+			perl -n -i -e 's/(?<!",)"(?!,")/""/g; s/^""/"/g; s/""$/"/g; print;' "$1"
+		)
 
-dbToCsv() {
-	sqlite3 "$DB" <<-EOF
-	.headers on
-	.mode csv
-	.output "$CSV"
-	SELECT * FROM songs;
-	EOF
+		importPlaylistCsvsToDb() (
+			FILEPATH="$1"
+			filename=$(basename -- "$FILEPATH")
+			playlist="${filename%.*}"
 
-	rm "$DB"
-}
+			sqlite3 "$DB" <<-EOF
+				.mode csv
+				.import "$FILEPATH" import    
+				
+				INSERT INTO songs
+				(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload, infoHash, fileHash)
+				SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS extraSearchTerm, 1 AS shouldDownload, "" AS infoHash, "" AS fileHash
+				FROM import;
+				
+				DROP TABLE import;
+			EOF
+		)
 
-createCsvFromZip() {
-	createDb
-	tempFolder=$(mktemp -d)
-	echo "Using temp dir $tempFolder"
-	unzip "$1" -d "$tempFolder"
-	for filepath in $(ls "$tempFolder"/*.csv); do
-		fixUnescapedQuotesInCsv "$filepath"
-		importPlaylistCsvsToDb "$filepath"
-	done
-	dbToCsv
-}
+		createEmptyDb "$DB"
+		tempFolder=$(mktemp -d)
+		unzip "$ZIP" -d "$tempFolder"
+		for filepath in "$tempFolder"/*.csv; do
+			fixUnescapedQuotesInCsv "$filepath"
+			importPlaylistCsvsToDb "$filepath"
+		done
+	)
 
-csvToDb() {
-	sqlite3 "$DB" <<-EOF
-	.mode csv
-	.import "$CSV" songs
-	EOF
+	case "$FROM" in
+		*.zip)
+			zipToDb "$FROM" "$DB"
+			;;
+		*.csv)
+			csvToDb "$FROM" "$DB"
+			;;
+		*.sqlite3)
+			mv "$FROM" "$DB"
+			;;
+		gdrive)
+			(
+				mkdir -p metadata
+				cd metadata
+				gdrive cd j/program_databases/playlists
+				gdrive sync-down
+			)
+			csvToDb "metadata/songs.csv" "$DB"
+			;;
+	esac
+)
 
-	rm "$CSV"
-	trap dbToCsv EXIT
-}
+convertFromDbToX() (
+	DB="$1"
+	TO="$2"
 
-downloadFromDb() {
+	dbToCsv() (
+		DB="$1"
+		CSV="$2"
+
+		sqlite3 "$DB" <<-EOF
+			.headers on
+			.mode csv
+			.output "$CSV"
+			SELECT * FROM songs;
+		EOF
+		rm "$DB"
+	)
+
+	case "$TO" in
+		*.zip)
+			echo "Will not output to zip, will instead output to songs.csv"
+			dbToCsv "$DB" "songs.csv"
+			;;
+		*.csv)
+			dbToCsv "$DB" "$TO"
+			;;
+		*.sqlite3)
+			mv "$DB" "$TO"
+			;;
+		gdrive)
+			echo "Will not output to gdrive, will instead output to songs.csv"
+			dbToCsv "$DB" "songs.csv"
+			;;
+	esac
+)
+
+downloadDbToFolder() (
+	DB="$1"
+	FOLDER="$2"
+
 	mkdir -p "$FOLDER"
 	for id in $(sqlite3 "$DB" "SELECT rowid FROM songs;"); do
-		downloadSongFromDbWithId $id || :
+		downloadSongFromDbWithId "$id" || :
 	done
-}
+)
 
-downloadFromCsv() {
-	csvToDb
-	downloadFromDb
-}
+downloadSongFromDbWithId() (
+	ID="$1"
 
-whereIdIsSelectColumn() {
-	sqlite3 "$DB" "SELECT \"$2\" FROM songs WHERE rowid = \"$1\";"
-}
+	whereIdIsSelectColumn() (
+		sqlite3 "$DB" "SELECT \"$2\" FROM songs WHERE rowid = \"$1\";"
+	)
 
-whereIdIsUpdateColumn() {
-	sqlite3 "$DB" "UPDATE songs SET \"$2\"='$3' WHERE rowid = \"$1\";"
-}
+	whereIdIsUpdateColumn() (
+		sqlite3 "$DB" "UPDATE songs SET \"$2\"='$3' WHERE rowid = \"$1\";"
+	)
 
-calculateInfoHashWithId() {
-	md5String "$(sqlite3 "$DB" "SELECT playlist, youtubeId, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload FROM songs WHERE rowid = \"$1\";")"
-}
+	calculateInfoHashWithId() (
+		md5String "$(sqlite3 "$DB" "SELECT playlist, youtubeId, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload FROM songs WHERE rowid = \"$1\";")"
+	)
 
-downloadSongFromDbWithId() {
+	downloadYoutubeAndExport_dlFilename_dlYoutubeId() {
+		downloadYoutube() (
+			if [ "$1" == "--search" ]; then
+				youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$2"
+			elif [ "$1" == "--id" ]; then
+				youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' "$2"
+			fi
+		)
+
+		set_dlFilename_dlYoutubeId_FromData() {
+			while IFS=' ' read -r tool step info; do
+				if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
+					dlFilename="$info"
+					echo "Downloaded: '$dlFilename'"
+				elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
+					dlYoutubeId=${step%:}
+				fi
+			done <<<"$1"
+		}
+
+		sanitizeMoveAndExport_dlFilename() {
+			dlFilename="${1//\'/}"
+			mv "$1" "$dlFilename"
+		}
+
+		downloadedMetadata="$(downloadYoutube "$@")"
+		set_dlFilename_dlYoutubeId_FromData "$downloadedMetadata"
+		sanitizeMoveAndExport_dlFilename "$dlFilename"
+	}
+
 	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime extraSearchTerm shouldDownload infoHash fileHash; do
-		declare $column="$(whereIdIsSelectColumn $1 $column)"
+		declare $column="$(whereIdIsSelectColumn "$ID" $column)"
 	done
+	# shellcheck disable=SC2154
 	idTitle="${title//\'/}"
 	idTitle="${idTitle//\"/}"
+	# shellcheck disable=SC2154
 	idArtist="${artist//\'/}"
 	idArtist="${idArtist//\"/}"
 	filePath="$FOLDER/$playlist"
 	mkdir -p "$filePath"
 
-	if [ "$infoHash" != "$(calculateInfoHashWithId $1)" ]; then
+	if [ "$infoHash" != "$(calculateInfoHashWithId "$ID")" ]; then
 		# Check if infohash is current - if not, redownload and save data
 		echo -n "Downloading - title: '$idTitle' and artist: '$idArtist'........ "
 
+		# shellcheck disable=SC2154
 		searchTerm="${idTitle//:/} ${idArtist//:/} $extraSearchTerm"
 		downloadYoutubeAndExport_dlFilename_dlYoutubeId --search "$searchTerm"
 
-		whereIdIsUpdateColumn $1 youtubeId "$dlYoutubeId"
-		whereIdIsUpdateColumn $1 youtubeTitle "${dlFilename%.mp3}"
-		whereIdIsUpdateColumn $1 fileHash "$(md5File "$dlFilename")"
+		whereIdIsUpdateColumn "$ID" youtubeId "$dlYoutubeId"
+		whereIdIsUpdateColumn "$ID" youtubeTitle "${dlFilename%.mp3}"
+		whereIdIsUpdateColumn "$ID" fileHash "$(md5File "$dlFilename")"
 
-		infoHash="$(calculateInfoHashWithId $1)"
-		whereIdIsUpdateColumn $1 infoHash "$infoHash"
+		infoHash="$(calculateInfoHashWithId "$ID")"
+		whereIdIsUpdateColumn "$ID" infoHash "$infoHash"
 
 		filename="${dlFilename%.mp3}-${infoHash:0:5}.mp3"
-		whereIdIsUpdateColumn $1 filename "$filename"
+		whereIdIsUpdateColumn "$ID" filename "$filename"
 		mv "$dlFilename" "$filePath/$filename"
 
-	#elif [ ! -f "$filePath/$filename" ] || [ "$fileHash" != "$(md5File "$filePath/$filename")" ]; then # filename now includes hash
 	elif [ ! -f "$filePath/$filename" ]; then
 		# Check if file exists and filehash is current - if not, redownload from data
 		echo -n "Redownloading - title: '$idTitle' and artist: '$idArtist'........ "
+		# shellcheck disable=SC2154
 		downloadYoutubeAndExport_dlFilename_dlYoutubeId --id "$youtubeId"
 		mv "$dlFilename" "$filePath/$filename"
 
@@ -175,92 +255,86 @@ downloadSongFromDbWithId() {
 		# File and info are up-to-date
 		echo "File up-to-date - title: '$idTitle' and artist: '$idArtist'"
 	fi
-}
+)
 
-downloadYoutubeAndExport_dlFilename_dlYoutubeId() {
-	downloadYoutube() {
-		if [ "$1" == "--search" ]; then
-			youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$2" 
-		elif [ "$1" == "--id" ]; then
-			youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' "$2" 
-		fi
-	}
+showHelp() (
+	cat <<-"EOF"
+		Usage:
+		  [options] download
+		  [options] exportTo <gdrive|file.db|file.csv>
+		Options:
+		  --help|-h               Show this message
+		  --metadata|-m <source>  Choose the source of the metadata:
+		                            gdrive - from google drive
+		                            file.zip - from a zip file from exportify
+		                            file.csv - from a csv database file
+		                          This source will be updated/overwritten with updated data
+		  --folder <folder>       Output folder
+		  --temp-db <file>        Change the temporary db file to use
+		  --updateFrom <file>     An exportify zip with which to update the playlists
+	EOF
+)
 
-	set_dlFilename_dlYoutubeId_FromData() {
-		while IFS=' ' read -r tool step info; do
-			if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
-				dlFilename="$info"
-				echo "Downloaded: '$dlFilename'"
-			elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
-				dlYoutubeId=${step%:}
-			fi
-		done <<< "$1"
-	}
-
-	sanitizeMoveAndExport_dlFilename() {
-		dlFilename="${1//\'/}"
-		mv "$1" "$dlFilename"
-	}
-
-	downloadedMetadata="$(downloadYoutube "$@")"
-	set_dlFilename_dlYoutubeId_FromData "$downloadedMetadata"
-	sanitizeMoveAndExport_dlFilename "$dlFilename"
-}
-
-SOURCE=csv
-OUTPUT=csv
+# ==== Arguments ====
+FOLDER=playlists
+#METADATA_FOLDER=metadata
+#METADATA_DB_FILEPATH="$METADATA_FOLDER/songs.db"
+#METADATA=metadata/songs.csv
+TEMP_DB=songs.sqlite3
 POSITIONAL=()
 while
-    key="$1"
-    case $key in
-		--source)
-			SOURCE="$2"
-			shift; shift ;;
-        --output)
-            OUTPUT="$2"
-            shift; shift ;;
-        -*)
-            echo "Unknown option: $1"
-            exit 1 ;;
-        *)
-            POSITIONAL+=("$1")
-            shift ;;
-    esac
-    [[ $# -gt 0 ]]
+	key="$1"
+	case $key in
+		--help | -h)
+			showHelp
+			exit 0
+			;;
+		--metadata | -m)
+			METADATA="$2"
+			shift
+			shift
+			;;
+		#--updateFrom)
+		#    UPDATE_FROM="$2"
+		#    shift; shift ;;
+		--folder)
+			FOLDER="$2"
+			shift
+			shift
+			;;
+		--temp-db)
+			TEMP_DB="$2"
+			shift
+			shift
+			;;
+		-*)
+			echo "Unknown option: $1"
+			showHelp
+			exit 1
+			;;
+		*)
+			POSITIONAL+=("$1")
+			shift
+			;;
+	esac
+	[[ $# -gt 0 ]]
 do true; done
 set -- "${POSITIONAL[@]}"
 
-case "$SOURCE" in
-	zip)
-		createCsvFromZip "$1"
-		shift
-		;;
-	gdrive)
-		downloadCsvFromGdrive
-		;;
-	csv)
-		;;
-	*)
-		echo Not a valid source
-		exit 1
-		;;
-esac
-
-case "$OUTPUT" in
-	sql|sqlite|sqlite3)
-		;;
-	csv)
-		;;
-esac
-
 case "$1" in
 	download)
-		shift
-		downloadFromCsv
+		convertFromXToDb "$METADATA" "$TEMP_DB"
+		downloadDbToFolder "$TEMP_DB" "$FOLDER"
+		convertFromDbToX "$TEMP_DB" "$METADATA"
+		;;
+	exportTo)
+		convertFromXToDb "$METADATA" "$TEMP_DB"
+		convertFromDbToX "$TEMP_DB" "$2"
 		;;
 	*)
-		echo Please specify: download
-		exit 1 ;;
+		showHelp
+		exit 1
+		;;
 esac
 
 # ==== Cases ====
