@@ -115,8 +115,7 @@ convertFromXToDb() (
 			(
 				mkdir -p metadata
 				cd metadata
-				gdrive cd j/program_databases/playlists
-				gdrive sync-down
+				gdrive sync download "$GDRIVE_METADATA_FOLDER_ID" .
 			)
 			csvToDb "metadata/songs.csv" "$DB"
 			;;
@@ -274,6 +273,8 @@ showHelp() (
 		  --updateFrom <file>     An exportify zip with which to update the playlists
 	EOF
 )
+
+GDRIVE_METADATA_FOLDER_ID=1Yxb_3xFpmVuBYwLElhBwAa0ZlSxZmAZM
 
 # ==== Arguments ====
 FOLDER=playlists
