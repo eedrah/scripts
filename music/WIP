@@ -112,11 +112,8 @@ convertFromXToDb() (
 			mv "$FROM" "$DB"
 			;;
 		gdrive)
-			(
-				mkdir -p metadata
-				cd metadata
-				gdrive sync download "$GDRIVE_METADATA_FOLDER_ID" .
-			)
+			mkdir -p metadata
+			gdrive sync download "$GDRIVE_METADATA_FOLDER_ID" metadata
 			csvToDb "metadata/songs.csv" "$DB"
 			;;
 	esac
@@ -151,8 +148,9 @@ convertFromDbToX() (
 			mv "$DB" "$TO"
 			;;
 		gdrive)
-			echo "Will not output to gdrive, will instead output to songs.csv"
-			dbToCsv "$DB" "songs.csv"
+			mkdir -p metadata
+			dbToCsv "$DB" "metadata/songs.csv"
+			gdrive sync upload metadata "$GDRIVE_METADATA_FOLDER_ID"
 			;;
 	esac
 )
@@ -299,6 +297,10 @@ updateDbFromZip() (
 	rm "update-$TEMP_DB"
 )
 
+syncFolderWithGdrive() (
+	gdrive sync upload "$1" "$GDRIVE_PLAYLISTS_FOLDER_ID"
+)
+
 showHelp() (
 	cat <<-"EOF"
 		Usage:
@@ -312,19 +314,19 @@ showHelp() (
 		                            file.zip - from a zip file from exportify
 		                            file.csv - from a csv database file
 		                          This source will be updated/overwritten with updated data
+		  --gdrive                Will sync downloaded songs with those in gdrive. Will also
+		                          overwrite previous --metadata option with gdrive.
 		  --updateFrom|-u <file>  An exportify zip with which to update the playlists
 		  --folder <folder>       Output folder
 		  --temp-db <file>        Change the temporary db file to use
 	EOF
 )
 
-GDRIVE_METADATA_FOLDER_ID=1Yxb_3xFpmVuBYwLElhBwAa0ZlSxZmAZM
+readonly GDRIVE_METADATA_FOLDER_ID=1Yxb_3xFpmVuBYwLElhBwAa0ZlSxZmAZM
+readonly GDRIVE_PLAYLISTS_FOLDER_ID=1NphnIwWE9_oAa-rtQfOeCAOcgZ1PsZ64
 
 # ==== Arguments ====
 FOLDER=playlists
-#METADATA_FOLDER=metadata
-#METADATA_DB_FILEPATH="$METADATA_FOLDER/songs.db"
-#METADATA=metadata/songs.csv
 TEMP_DB=songs.sqlite3
 POSITIONAL=()
 while
@@ -337,6 +339,11 @@ while
 		--metadata | -m)
 			METADATA="$2"
 			shift
+			shift
+			;;
+		--gdrive)
+			GDRIVE=1
+			METADATA=gdrive
 			shift
 			;;
 		--updateFrom | -u)
@@ -377,6 +384,7 @@ case "$1" in
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
 		downloadDbToFolder "$TEMP_DB" "$FOLDER"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
+		[ "$GDRIVE" ] && syncFolderWithGdrive "$FOLDER"
 		;;
 	exportTo)
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
