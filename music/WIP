@@ -94,7 +94,7 @@ convertFromXToDb() (
 
 		createEmptyDb "$DB"
 		tempFolder=$(mktemp -d)
-		unzip "$ZIP" -d "$tempFolder"
+		unzip -q "$ZIP" -d "$tempFolder"
 		for filepath in "$tempFolder"/*.csv; do
 			fixUnescapedQuotesInCsv "$filepath"
 			importPlaylistCsvsToDb "$filepath"
@@ -134,7 +134,7 @@ convertFromDbToX() (
 			.headers on
 			.mode csv
 			.output "$CSV"
-			SELECT * FROM songs;
+			SELECT * FROM songs ORDER BY playlist, title, artist;
 		EOF
 		rm "$DB"
 	)
@@ -256,6 +256,49 @@ downloadSongFromDbWithId() (
 	fi
 )
 
+updateDbFromZip() (
+	DB="$1"
+	UPDATE_FROM="$2"
+
+	mergeToDbFromDb() (
+		DB_BASE="$1"
+		DB_UPDATE="$2"
+
+		sqlite3 "$DB_BASE" <<-EOF
+			ATTACH '$DB_UPDATE' AS new;
+			
+			BEGIN TRANSACTION;
+			-- Add rows that have spotifyUri in new, but not in base
+			INSERT INTO songs
+			SELECT ns.* 
+			FROM new.songs ns 
+			LEFT JOIN songs bs 
+			ON ns.spotifyUri = bs.spotifyUri 
+			WHERE bs.spotifyUri IS NULL;
+			
+			-- Delete rows that have spotifyUri in base, but not in new
+			DELETE FROM songs
+			WHERE rowid IN (
+			    SELECT bs.rowid
+			    FROM songs bs 
+			    LEFT JOIN new.songs ns 
+			    ON bs.spotifyUri = ns.spotifyUri 
+			    WHERE ns.spotifyUri IS NULL
+			);
+			
+			-- Don't touch rows without spotifyUri
+			
+			COMMIT;
+			
+			DETACH new;
+		EOF
+	)
+
+	convertFromXToDb "$UPDATE_FROM" "update-$TEMP_DB"
+	mergeToDbFromDb "$DB" "update-$TEMP_DB"
+	rm "update-$TEMP_DB"
+)
+
 showHelp() (
 	cat <<-"EOF"
 		Usage:
@@ -263,14 +306,15 @@ showHelp() (
 		  [options] exportTo <gdrive|file.db|file.csv>
 		Options:
 		  --help|-h               Show this message
+		  --continue|-c           Continue after an interrupted operation
 		  --metadata|-m <source>  Choose the source of the metadata:
 		                            gdrive - from google drive
 		                            file.zip - from a zip file from exportify
 		                            file.csv - from a csv database file
 		                          This source will be updated/overwritten with updated data
+		  --updateFrom|-u <file>  An exportify zip with which to update the playlists
 		  --folder <folder>       Output folder
 		  --temp-db <file>        Change the temporary db file to use
-		  --updateFrom <file>     An exportify zip with which to update the playlists
 	EOF
 )
 
@@ -295,9 +339,11 @@ while
 			shift
 			shift
 			;;
-		#--updateFrom)
-		#    UPDATE_FROM="$2"
-		#    shift; shift ;;
+		--updateFrom | -u)
+			UPDATE_FROM="$2"
+			shift
+			shift
+			;;
 		--folder)
 			FOLDER="$2"
 			shift
@@ -306,6 +352,10 @@ while
 		--temp-db)
 			TEMP_DB="$2"
 			shift
+			shift
+			;;
+		--continue | -c)
+			CONTINUE=1
 			shift
 			;;
 		-*)
@@ -324,12 +374,13 @@ set -- "${POSITIONAL[@]}"
 
 case "$1" in
 	download)
-		convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
 		downloadDbToFolder "$TEMP_DB" "$FOLDER"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
 		;;
 	exportTo)
-		convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
 		convertFromDbToX "$TEMP_DB" "$2"
 		;;
 	*)
@@ -337,11 +388,3 @@ case "$1" in
 		exit 1
 		;;
 esac
-
-# ==== Cases ====
-# CSV doesn't exist
-# Song added to spotify
-# Playlist added to spotify
-# Song added to CSV
-# Youtube link changed
-# Start or end time changed
