@@ -1,4 +1,4 @@
-#! /bin/bash
+#!/usr/bin/env bash
 # shellcheck disable=SC2030 disable=SC2031
 set -eo pipefail
 IFS="$(printf '\n\t')"
@@ -29,6 +29,21 @@ if [ 098f6bcd4621d373cade4e832627b4f6 != "$(md5String test)" ] || [ 098f6bcd4621
 fi
 
 # ==== Functions ====
+sanitizeDb() (
+	DB="$1"
+
+	deleteEmptySongs() (
+		sqlite3 "$DB" "DELETE FROM songs WHERE title = '' AND artist = '';"
+	)
+
+	deleteUnwantedPlaylists() (
+		true
+	)
+
+	deleteEmptySongs
+	deleteUnwantedPlaylists
+)
+
 convertFromXToDb() (
 	FROM="$1"
 	DB="$2"
@@ -99,6 +114,7 @@ convertFromXToDb() (
 			fixUnescapedQuotesInCsv "$filepath"
 			importPlaylistCsvsToDb "$filepath"
 		done
+		sanitizeDb "$DB"
 	)
 
 	case "$FROM" in
@@ -151,6 +167,7 @@ convertFromDbToX() (
 			mkdir -p metadata
 			dbToCsv "$DB" "metadata/songs.csv"
 			gdrive sync upload metadata "$GDRIVE_METADATA_FOLDER_ID"
+			rm "metadata/songs.csv"
 			;;
 	esac
 )
@@ -161,7 +178,7 @@ downloadDbToFolder() (
 
 	mkdir -p "$FOLDER"
 	for id in $(sqlite3 "$DB" "SELECT rowid FROM songs;"); do
-		downloadSongFromDbWithId "$id" || :
+		downloadSongFromDbWithId "$id" || true
 	done
 )
 
@@ -295,15 +312,75 @@ updateDbFromZip() (
 	convertFromXToDb "$UPDATE_FROM" "update-$TEMP_DB"
 	mergeToDbFromDb "$DB" "update-$TEMP_DB"
 	rm "update-$TEMP_DB"
+	sanitizeDb "$DB"
 )
 
 syncFolderWithGdrive() (
 	gdrive sync upload "$1" "$GDRIVE_PLAYLISTS_FOLDER_ID"
 )
 
+downloadMissingGdriveFilesToFolder() (
+	DB="$1"
+	FOLDER="$2"
+
+	listAllFiles() (
+		echo "Starting to query google drive..." 1>&2
+		playlistsFoldersIds="$(gdrive list --name-width 0 --order name_natural --max 1000 --query "'$GDRIVE_PLAYLISTS_FOLDER_ID' in parents and trashed = false" | getGdriveField Id)"
+		newline=$'\n'
+		IFS="$(printf ' \n\t')"
+		query="'${playlistsFoldersIds//$newline/\' in parents or \'}' in parents"
+		gdrive list --name-width 0 --order name_natural --max 10000 --query "($query) and trashed = false" | getGdriveField Name
+		echo "Finished querying google drive" 1>&2
+	)
+
+	isInGdriveFiles() {
+		[ -z "$1" ] && return 1
+		test "${gdriveFilesIndex["$1"]}"
+	}
+
+	IFS=$'\n' read -r -d '' -a gdriveFiles < <(listAllFiles) || true
+	# Adapted from https://stackoverflow.com/a/14550606
+	declare -A gdriveFilesIndex
+	for i in "${!gdriveFiles[@]}"; do
+		gdriveFilesIndex["${gdriveFiles["$i"]}"]="$i"
+	done
+
+	mkdir -p "$FOLDER"
+	for line in $(sqlite3 "$DB" "SELECT rowid, filename FROM songs;"); do
+		id="$(cut -d '|' -f 1 <<<"$line")"
+		filename="$(cut -d '|' -f 2- <<<"$line")"
+		if ! isInGdriveFiles "$filename"; then
+			downloadSongFromDbWithId "$id" || true
+		fi
+	done
+)
+
+getGdriveField() (
+	FIELD="$1"
+	while IFS=' ' read -r id rest; do
+		if [ "$id" = Id ]; then continue; fi
+		IFS=' ' read -r rTime rDate rSizeUnit rSize rType rName < <(echo "$rest" | rev)
+		if [ "$rSizeUnit" = rid ]; then
+			# If it's a directory it doesn't have size information
+			rName="$rSize"
+			rType="$rSizeUnit"
+			rSize=
+			rSizeUnit=
+		fi
+		case "$FIELD" in
+			Id) echo "$id" ;;
+			Name) echo "$rName" | rev ;;
+			Type) echo "$rType" | rev ;;
+			Size) echo "$rSizeUnit $rSize" | rev ;;
+			Created) echo "$rTime $rDate" | rev ;;
+		esac
+	done
+)
+
 showHelp() (
 	cat <<-"EOF"
 		Usage:
+		  [options] updateGdrive
 		  [options] download
 		  [options] exportTo <gdrive|file.db|file.csv>
 		Options:
@@ -380,8 +457,20 @@ do true; done
 set -- "${POSITIONAL[@]}"
 
 case "$1" in
+	test)
+		downloadMissingGdriveFilesToFolder "$TEMP_DB" "$FOLDER"
+		;;
+	updateGdrive)
+		METADATA=gdrive
+		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
+		downloadMissingGdriveFilesToFolder "$TEMP_DB" "$FOLDER"
+		convertFromDbToX "$TEMP_DB" "$METADATA"
+		syncFolderWithGdrive "$FOLDER"
+		;;
 	download)
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
 		downloadDbToFolder "$TEMP_DB" "$FOLDER"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
 		[ "$GDRIVE" ] && syncFolderWithGdrive "$FOLDER"
@@ -390,6 +479,9 @@ case "$1" in
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
 		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
 		convertFromDbToX "$TEMP_DB" "$2"
+		;;
+	'')
+		${BASH_SOURCE[0]} updateGdrive
 		;;
 	*)
 		showHelp
