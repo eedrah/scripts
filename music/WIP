@@ -319,17 +319,21 @@ syncFolderWithGdrive() (
 	gdrive sync upload "$1" "$GDRIVE_PLAYLISTS_FOLDER_ID"
 )
 
+listAllGdriveFilesData() (
+	playlistsFoldersIds="$(gdrive list --name-width 0 --order name_natural --max 1000 --query "'$GDRIVE_PLAYLISTS_FOLDER_ID' in parents and trashed = false" | getGdriveField Id)"
+	newline=$'\n'
+	IFS="$(printf ' \n\t')"
+	query="'${playlistsFoldersIds//$newline/\' in parents or \'}' in parents"
+	gdrive list --name-width 0 --order name_natural --max 10000 --query "($query) and trashed = false"
+)
+
 downloadMissingGdriveFilesToFolder() (
 	DB="$1"
 	FOLDER="$2"
 
-	listAllFiles() (
+	listAllFileNames() (
 		echo "Starting to query google drive..." 1>&2
-		playlistsFoldersIds="$(gdrive list --name-width 0 --order name_natural --max 1000 --query "'$GDRIVE_PLAYLISTS_FOLDER_ID' in parents and trashed = false" | getGdriveField Id)"
-		newline=$'\n'
-		IFS="$(printf ' \n\t')"
-		query="'${playlistsFoldersIds//$newline/\' in parents or \'}' in parents"
-		gdrive list --name-width 0 --order name_natural --max 10000 --query "($query) and trashed = false" | getGdriveField Name
+		listAllGdriveFilesData | getGdriveField Name
 		echo "Finished querying google drive" 1>&2
 	)
 
@@ -338,7 +342,7 @@ downloadMissingGdriveFilesToFolder() (
 		test "${gdriveFilesIndex["$1"]}"
 	}
 
-	IFS=$'\n' read -r -d '' -a gdriveFiles < <(listAllFiles) || true
+	IFS=$'\n' read -r -d '' -a gdriveFiles < <(listAllFileNames) || true
 	# Adapted from https://stackoverflow.com/a/14550606
 	declare -A gdriveFilesIndex
 	for i in "${!gdriveFiles[@]}"; do
@@ -353,6 +357,20 @@ downloadMissingGdriveFilesToFolder() (
 			downloadSongFromDbWithId "$id" || true
 		fi
 	done
+)
+
+deleteDeletedFilesInGdrive() (
+	DB="$1"
+	while read -r line; do
+		filename=$(echo "$line" | getGdriveField Name)
+		if [ -z "$filename" ]; then continue; fi
+		fileExistsInDatabase=$(sqlite3 "$DB" "SELECT 1 FROM songs WHERE filename = '$filename'")
+		if [ -z "$fileExistsInDatabase" ]; then
+			id=$(echo "$line" | getGdriveField Id)
+			#echo "Deleting $filename..."
+			gdrive delete "$id"
+		fi
+	done < <(listAllGdriveFilesData) || true
 )
 
 getGdriveField() (
@@ -458,13 +476,15 @@ set -- "${POSITIONAL[@]}"
 
 case "$1" in
 	test)
-		downloadMissingGdriveFilesToFolder "$TEMP_DB" "$FOLDER"
+		#deleteDeletedFilesInGdrive "$TEMP_DB"
 		;;
 	updateGdrive)
 		METADATA=gdrive
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
 		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
 		downloadMissingGdriveFilesToFolder "$TEMP_DB" "$FOLDER"
+		#listDeletedFilesInFolder "$TEMP_DB" # and delete them so they aren't restoring on sync
+		deleteDeletedFilesInGdrive "$TEMP_DB"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
 		syncFolderWithGdrive "$FOLDER"
 		;;
