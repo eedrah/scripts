@@ -1,0 +1,510 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2030 disable=SC2031
+set -eo pipefail
+IFS="$(printf '\n\t')"
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+#set -u
+
+# ==== Hashing test ====
+if (type -a md5 &>/dev/null); then
+	md5String() (
+		md5 -qs "$1"
+	)
+	md5File() (
+		md5 -q "$1"
+	)
+else
+	md5String() (
+		echo -n "$1" | md5sum | cut -f 1 -d ' '
+	)
+	md5File() (
+		echo Not yet implemented.
+		exit 1
+	)
+fi
+if [ 098f6bcd4621d373cade4e832627b4f6 != "$(md5String test)" ] || [ 098f6bcd4621d373cade4e832627b4f6 != "$(md5File <(echo -n test))" ]; then
+	echo "Hashing test failed! Received string $(md5String test) and file hash $(md5File <(echo -n test))"
+	exit 1
+fi
+
+# ==== Functions ====
+sanitizeDb() (
+	DB="$1"
+
+	deleteEmptySongs() (
+		sqlite3 "$DB" "DELETE FROM songs WHERE title = '' AND artist = '';"
+	)
+
+	deleteUnwantedPlaylists() (
+		true
+	)
+
+	deleteEmptySongs
+	deleteUnwantedPlaylists
+)
+
+convertFromXToDb() (
+	FROM="$1"
+	DB="$2"
+
+	csvToDb() (
+		CSV="$1"
+		DB="$2"
+
+		sqlite3 "$DB" <<-EOF
+			.mode csv
+			.import "$CSV" songs
+		EOF
+		rm "$CSV"
+		#trap dbToCsv EXIT
+	)
+
+	zipToDb() (
+		ZIP="$1"
+		DB="$2"
+
+		createEmptyDb() (
+			sqlite3 "$1" <<-EOF
+				CREATE TABLE songs (
+				startTime TEXT,
+				endTime TEXT,
+				extraSearchTerm TEXT,
+				shouldDownload TEXT,
+				youtubeTitle TEXT,
+				playlist TEXT,
+				title TEXT,
+				artist TEXT,
+				album TEXT,
+				filename TEXT,
+				spotifyUri TEXT,
+				infoHash TEXT,
+				fileHash TEXT,
+				youtubeId TEXT
+				);
+			EOF
+		)
+
+		fixUnescapedQuotesInCsv() (
+			perl -n -i -e 's/(?<!",)"(?!,")/""/g; s/^""/"/g; s/""$/"/g; print;' "$1"
+		)
+
+		importPlaylistCsvsToDb() (
+			FILEPATH="$1"
+			filename=$(basename -- "$FILEPATH")
+			playlist="${filename%.*}"
+
+			sqlite3 "$DB" <<-EOF
+				.mode csv
+				.import "$FILEPATH" import    
+				
+				INSERT INTO songs
+				(playlist, filename, youtubeId, youtubeTitle, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload, infoHash, fileHash)
+				SELECT "$playlist" AS playlist, "" AS filename, "" AS youtubeId, "" AS youtubeTitle, "Spotify URI", "Track Name", "Artist Name", "Album Name", "" AS startTime, "" AS endTime, "" AS extraSearchTerm, 1 AS shouldDownload, "" AS infoHash, "" AS fileHash
+				FROM import;
+				
+				DROP TABLE import;
+			EOF
+		)
+
+		createEmptyDb "$DB"
+		tempFolder=$(mktemp -d)
+		unzip -q "$ZIP" -d "$tempFolder"
+		for filepath in "$tempFolder"/*.csv; do
+			fixUnescapedQuotesInCsv "$filepath"
+			importPlaylistCsvsToDb "$filepath"
+		done
+		sanitizeDb "$DB"
+	)
+
+	case "$FROM" in
+		*.zip)
+			zipToDb "$FROM" "$DB"
+			;;
+		*.csv)
+			csvToDb "$FROM" "$DB"
+			;;
+		*.sqlite3)
+			mv "$FROM" "$DB"
+			;;
+		gdrive)
+			mkdir -p metadata
+			gdrive sync download "$GDRIVE_METADATA_FOLDER_ID" metadata
+			csvToDb "metadata/songs.csv" "$DB"
+			;;
+	esac
+)
+
+convertFromDbToX() (
+	DB="$1"
+	TO="$2"
+
+	dbToCsv() (
+		DB="$1"
+		CSV="$2"
+
+		sqlite3 "$DB" <<-EOF
+			.headers on
+			.mode csv
+			.output "$CSV"
+			SELECT * FROM songs ORDER BY playlist, title, artist;
+		EOF
+		rm "$DB"
+	)
+
+	case "$TO" in
+		*.zip)
+			echo "Will not output to zip, will instead output to songs.csv"
+			dbToCsv "$DB" "songs.csv"
+			;;
+		*.csv)
+			dbToCsv "$DB" "$TO"
+			;;
+		*.sqlite3)
+			mv "$DB" "$TO"
+			;;
+		gdrive)
+			mkdir -p metadata
+			dbToCsv "$DB" "metadata/songs.csv"
+			gdrive sync upload metadata "$GDRIVE_METADATA_FOLDER_ID"
+			rm "metadata/songs.csv"
+			;;
+	esac
+)
+
+downloadDbToFolder() (
+	DB="$1"
+	FOLDER="$2"
+
+	mkdir -p "$FOLDER"
+	for id in $(sqlite3 "$DB" "SELECT rowid FROM songs;"); do
+		downloadSongFromDbWithId "$id" || true
+	done
+)
+
+downloadSongFromDbWithId() (
+	ID="$1"
+
+	whereIdIsSelectColumn() (
+		sqlite3 "$DB" "SELECT \"$2\" FROM songs WHERE rowid = \"$1\";"
+	)
+
+	whereIdIsUpdateColumn() (
+		sqlite3 "$DB" "UPDATE songs SET \"$2\"='$3' WHERE rowid = \"$1\";"
+	)
+
+	calculateInfoHashWithId() (
+		md5String "$(sqlite3 "$DB" "SELECT playlist, youtubeId, spotifyUri, title, artist, album, startTime, endTime, extraSearchTerm, shouldDownload FROM songs WHERE rowid = \"$1\";")"
+	)
+
+	downloadYoutubeAndExport_dlFilename_dlYoutubeId() {
+		downloadYoutube() (
+			if [ "$1" == "--search" ]; then
+				youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' --default-search ytsearch "$2"
+			elif [ "$1" == "--id" ]; then
+				youtube-dl --format bestaudio --audio-format mp3 --extract-audio --postprocessor-args "-metadata title='$idTitle' -metadata artist='$idArtist'" --output '%(title)s.%(ext)s' "$2"
+			fi
+		)
+
+		set_dlFilename_dlYoutubeId_FromData() {
+			while IFS=' ' read -r tool step info; do
+				if [ "$tool" == "[ffmpeg]" ] && [ "$step" == "Destination:" ]; then
+					dlFilename="$info"
+					echo "Downloaded: '$dlFilename'"
+				elif [ "$tool" == "[youtube]" ] && [ "$info" == "Downloading webpage" ]; then
+					dlYoutubeId=${step%:}
+				fi
+			done <<<"$1"
+		}
+
+		sanitizeMoveAndExport_dlFilename() {
+			dlFilename="${1//\'/}"
+			mv "$1" "$dlFilename"
+		}
+
+		downloadedMetadata="$(downloadYoutube "$@")"
+		set_dlFilename_dlYoutubeId_FromData "$downloadedMetadata"
+		sanitizeMoveAndExport_dlFilename "$dlFilename"
+	}
+
+	for column in playlist filename youtubeId youtubeTitle spotifyUri title artist album startTime endTime extraSearchTerm shouldDownload infoHash fileHash; do
+		declare $column="$(whereIdIsSelectColumn "$ID" $column)"
+	done
+	# shellcheck disable=SC2154
+	idTitle="${title//\'/}"
+	idTitle="${idTitle//\"/}"
+	# shellcheck disable=SC2154
+	idArtist="${artist//\'/}"
+	idArtist="${idArtist//\"/}"
+	filePath="$FOLDER/$playlist"
+	mkdir -p "$filePath"
+
+	if [ "$infoHash" != "$(calculateInfoHashWithId "$ID")" ]; then
+		# Check if infohash is current - if not, redownload and save data
+		echo -n "Downloading - title: '$idTitle' and artist: '$idArtist'........ "
+
+		# shellcheck disable=SC2154
+		searchTerm="${idTitle//:/} ${idArtist//:/} $extraSearchTerm"
+		downloadYoutubeAndExport_dlFilename_dlYoutubeId --search "$searchTerm"
+
+		whereIdIsUpdateColumn "$ID" youtubeId "$dlYoutubeId"
+		whereIdIsUpdateColumn "$ID" youtubeTitle "${dlFilename%.mp3}"
+		whereIdIsUpdateColumn "$ID" fileHash "$(md5File "$dlFilename")"
+
+		infoHash="$(calculateInfoHashWithId "$ID")"
+		whereIdIsUpdateColumn "$ID" infoHash "$infoHash"
+
+		filename="${dlFilename%.mp3}-${infoHash:0:5}.mp3"
+		whereIdIsUpdateColumn "$ID" filename "$filename"
+		mv "$dlFilename" "$filePath/$filename"
+
+	elif [ ! -f "$filePath/$filename" ]; then
+		# Check if file exists and filehash is current - if not, redownload from data
+		echo -n "Redownloading - title: '$idTitle' and artist: '$idArtist'........ "
+		# shellcheck disable=SC2154
+		downloadYoutubeAndExport_dlFilename_dlYoutubeId --id "$youtubeId"
+		mv "$dlFilename" "$filePath/$filename"
+
+	else
+		# File and info are up-to-date
+		echo "File up-to-date - title: '$idTitle' and artist: '$idArtist'"
+	fi
+)
+
+updateDbFromZip() (
+	DB="$1"
+	UPDATE_FROM="$2"
+
+	mergeToDbFromDb() (
+		DB_BASE="$1"
+		DB_UPDATE="$2"
+
+		sqlite3 "$DB_BASE" <<-EOF
+			ATTACH '$DB_UPDATE' AS new;
+			
+			BEGIN TRANSACTION;
+			-- Add rows that have spotifyUri in new, but not in base
+			INSERT INTO songs
+			SELECT ns.* 
+			FROM new.songs ns 
+			LEFT JOIN songs bs 
+			ON ns.spotifyUri = bs.spotifyUri 
+			WHERE bs.spotifyUri IS NULL;
+			
+			-- Delete rows that have spotifyUri in base, but not in new
+			DELETE FROM songs
+			WHERE rowid IN (
+			    SELECT bs.rowid
+			    FROM songs bs 
+			    LEFT JOIN new.songs ns 
+			    ON bs.spotifyUri = ns.spotifyUri 
+			    WHERE ns.spotifyUri IS NULL
+			);
+			
+			-- Don't touch rows without spotifyUri
+			
+			COMMIT;
+			
+			DETACH new;
+		EOF
+	)
+
+	convertFromXToDb "$UPDATE_FROM" "update-$TEMP_DB"
+	mergeToDbFromDb "$DB" "update-$TEMP_DB"
+	rm "update-$TEMP_DB"
+	sanitizeDb "$DB"
+)
+
+syncFolderWithGdrive() (
+	gdrive sync upload "$1" "$GDRIVE_PLAYLISTS_FOLDER_ID"
+)
+
+listAllGdriveFilesData() (
+	playlistsFoldersIds="$(gdrive list --name-width 0 --order name_natural --max 1000 --query "'$GDRIVE_PLAYLISTS_FOLDER_ID' in parents and trashed = false" | getGdriveField Id)"
+	newline=$'\n'
+	IFS="$(printf ' \n\t')"
+	query="'${playlistsFoldersIds//$newline/\' in parents or \'}' in parents"
+	gdrive list --name-width 0 --order name_natural --max 10000 --query "($query) and trashed = false"
+)
+
+downloadMissingGdriveFilesToFolder() (
+	DB="$1"
+	FOLDER="$2"
+
+	listAllFileNames() (
+		echo "Starting to query google drive..." 1>&2
+		listAllGdriveFilesData | getGdriveField Name
+		echo "Finished querying google drive" 1>&2
+	)
+
+	isInGdriveFiles() {
+		[ -z "$1" ] && return 1
+		test "${gdriveFilesIndex["$1"]}"
+	}
+
+	IFS=$'\n' read -r -d '' -a gdriveFiles < <(listAllFileNames) || true
+	# Adapted from https://stackoverflow.com/a/14550606
+	declare -A gdriveFilesIndex
+	for i in "${!gdriveFiles[@]}"; do
+		gdriveFilesIndex["${gdriveFiles["$i"]}"]="$i"
+	done
+
+	mkdir -p "$FOLDER"
+	for line in $(sqlite3 "$DB" "SELECT rowid, filename FROM songs;"); do
+		id="$(cut -d '|' -f 1 <<<"$line")"
+		filename="$(cut -d '|' -f 2- <<<"$line")"
+		if ! isInGdriveFiles "$filename"; then
+			downloadSongFromDbWithId "$id" || true
+		fi
+	done
+)
+
+deleteDeletedFilesInGdrive() (
+	DB="$1"
+	while read -r line; do
+		filename=$(echo "$line" | getGdriveField Name)
+		if [ -z "$filename" ]; then continue; fi
+		fileExistsInDatabase=$(sqlite3 "$DB" "SELECT 1 FROM songs WHERE filename = '$filename'")
+		if [ -z "$fileExistsInDatabase" ]; then
+			id=$(echo "$line" | getGdriveField Id)
+			#echo "Deleting $filename..."
+			gdrive delete "$id"
+		fi
+	done < <(listAllGdriveFilesData) || true
+)
+
+getGdriveField() (
+	FIELD="$1"
+	while IFS=' ' read -r id rest; do
+		if [ "$id" = Id ]; then continue; fi
+		IFS=' ' read -r rTime rDate rSizeUnit rSize rType rName < <(echo "$rest" | rev)
+		if [ "$rSizeUnit" = rid ]; then
+			# If it's a directory it doesn't have size information
+			rName="$rSize"
+			rType="$rSizeUnit"
+			rSize=
+			rSizeUnit=
+		fi
+		case "$FIELD" in
+			Id) echo "$id" ;;
+			Name) echo "$rName" | rev ;;
+			Type) echo "$rType" | rev ;;
+			Size) echo "$rSizeUnit $rSize" | rev ;;
+			Created) echo "$rTime $rDate" | rev ;;
+		esac
+	done
+)
+
+showHelp() (
+	cat <<-"EOF"
+		Usage:
+		  [options] updateGdrive
+		  [options] download
+		  [options] exportTo <gdrive|file.db|file.csv>
+		Options:
+		  --help|-h               Show this message
+		  --continue|-c           Continue after an interrupted operation
+		  --metadata|-m <source>  Choose the source of the metadata:
+		                            gdrive - from google drive
+		                            file.zip - from a zip file from exportify
+		                            file.csv - from a csv database file
+		                          This source will be updated/overwritten with updated data
+		  --gdrive                Will sync downloaded songs with those in gdrive. Will also
+		                          overwrite previous --metadata option with gdrive.
+		  --updateFrom|-u <file>  An exportify zip with which to update the playlists
+		  --folder <folder>       Output folder
+		  --temp-db <file>        Change the temporary db file to use
+	EOF
+)
+
+readonly GDRIVE_METADATA_FOLDER_ID=1Yxb_3xFpmVuBYwLElhBwAa0ZlSxZmAZM
+readonly GDRIVE_PLAYLISTS_FOLDER_ID=1NphnIwWE9_oAa-rtQfOeCAOcgZ1PsZ64
+
+# ==== Arguments ====
+FOLDER=playlists
+TEMP_DB=songs.sqlite3
+POSITIONAL=()
+while
+	key="$1"
+	case $key in
+		--help | -h)
+			showHelp
+			exit 0
+			;;
+		--metadata | -m)
+			METADATA="$2"
+			shift
+			shift
+			;;
+		--gdrive)
+			GDRIVE=1
+			METADATA=gdrive
+			shift
+			;;
+		--updateFrom | -u)
+			UPDATE_FROM="$2"
+			shift
+			shift
+			;;
+		--folder)
+			FOLDER="$2"
+			shift
+			shift
+			;;
+		--temp-db)
+			TEMP_DB="$2"
+			shift
+			shift
+			;;
+		--continue | -c)
+			CONTINUE=1
+			shift
+			;;
+		-*)
+			echo "Unknown option: $1"
+			showHelp
+			exit 1
+			;;
+		*)
+			POSITIONAL+=("$1")
+			shift
+			;;
+	esac
+	[[ $# -gt 0 ]]
+do true; done
+set -- "${POSITIONAL[@]}"
+
+case "$1" in
+	test)
+		#deleteDeletedFilesInGdrive "$TEMP_DB"
+		;;
+	updateGdrive)
+		METADATA=gdrive
+		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
+		downloadMissingGdriveFilesToFolder "$TEMP_DB" "$FOLDER"
+		#listDeletedFilesInFolder "$TEMP_DB" # and delete them so they aren't restoring on sync
+		deleteDeletedFilesInGdrive "$TEMP_DB"
+		convertFromDbToX "$TEMP_DB" "$METADATA"
+		syncFolderWithGdrive "$FOLDER"
+		;;
+	download)
+		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
+		downloadDbToFolder "$TEMP_DB" "$FOLDER"
+		convertFromDbToX "$TEMP_DB" "$METADATA"
+		[ "$GDRIVE" ] && syncFolderWithGdrive "$FOLDER"
+		;;
+	exportTo)
+		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
+		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
+		convertFromDbToX "$TEMP_DB" "$2"
+		;;
+	'')
+		${BASH_SOURCE[0]} updateGdrive
+		;;
+	*)
+		showHelp
+		exit 1
+		;;
+esac
