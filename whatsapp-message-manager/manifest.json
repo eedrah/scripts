@@ -1,0 +1,17 @@
+{
+  "name": "Whatsapp message manager",
+  "version": "0.1.0",
+  "description": "Whatsapp message manager",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://web.whatsapp.com/"
+      ],
+      "js": ["inject.js"]
+    }
+  ],
+  "web_accessible_resources": [
+    "messageManager.js"
+  ],
+  "manifest_version": 2
+}
