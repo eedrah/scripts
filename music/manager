@@ -44,6 +44,11 @@ sanitizeDb() (
 	deleteUnwantedPlaylists
 )
 
+deleteDuplicateInfohashesFromDb() (
+	sqlite3 "$1" "DELETE FROM songs WHERE rowid NOT IN (SELECT MIN(rowid) FROM songs GROUP BY infohash HAVING MIN(rowid));"
+)
+
+
 convertFromXToDb() (
 	FROM="$1"
 	DB="$2"
@@ -180,6 +185,8 @@ downloadDbToFolder() (
 	for id in $(sqlite3 "$DB" "SELECT rowid FROM songs;"); do
 		downloadSongFromDbWithId "$id" || true
 	done
+
+	deleteDuplicateInfohashesFromDb "$DB"
 )
 
 downloadSongFromDbWithId() (
@@ -363,6 +370,8 @@ downloadMissingGdriveFilesToFolder() (
 			downloadSongFromDbWithId "$id" || true
 		fi
 	done
+
+	deleteDuplicateInfohashesFromDb "$DB"
 )
 
 deleteDeletedFilesInGdrive() (
@@ -525,7 +534,7 @@ case "$1" in
 		downloadMissingGdriveFilesToFolder "$TEMP_DB" "$FOLDER"
 		#listDeletedFilesInFolder "$TEMP_DB" # and delete them so they aren't restoring on sync
 		deleteDeletedFilesInGdrive "$TEMP_DB"
-		deleteDeletedFilesInFolder "$TEMP_DB"
+		deleteDeletedFilesInFolder "$TEMP_DB" "$FOLDER"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
 		upSyncFolderWithGdrive "$FOLDER"
 		;;
