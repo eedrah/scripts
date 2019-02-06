@@ -315,7 +315,11 @@ updateDbFromZip() (
 	sanitizeDb "$DB"
 )
 
-syncFolderWithGdrive() (
+downSyncFolderWithGdrive() (
+	gdrive sync download "$GDRIVE_PLAYLISTS_FOLDER_ID" "$1" 
+)
+
+upSyncFolderWithGdrive() (
 	gdrive sync upload "$1" "$GDRIVE_PLAYLISTS_FOLDER_ID"
 )
 
@@ -395,10 +399,23 @@ getGdriveField() (
 	done
 )
 
+downloadSpotifyPlaylists() (
+	if [ -f "$HOME/Downloads/spotify_playlists.zip" ]; then
+		echo '~/Downloads/spotify_playlists.zip already exists - please move or delete.'
+		exit 1
+	fi
+
+	chrome -p signed-in https://cdn.rawgit.com/martenjacobs/exportify/fixes/exportify.html
+	while
+		read -n 1 -p 'Waiting for ~/Downloads/spotify_playlists.zip' && [ ! -f "$HOME/Downloads/spotify_playlists.zip" ]
+	do true; done
+)
+
 showHelp() (
 	cat <<-"EOF"
 		Usage:
-		  [options] updateGdrive
+		  [options] updateGdriveSongs
+		  [options] updateGdriveMetadata
 		  [options] download
 		  [options] exportTo <gdrive|file.db|file.csv>
 		Options:
@@ -475,10 +492,12 @@ do true; done
 set -- "${POSITIONAL[@]}"
 
 case "$1" in
-	test)
-		#deleteDeletedFilesInGdrive "$TEMP_DB"
+	updateGdriveMetadata)
+		downloadSpotifyPlaylists
+		$BASH_SOURCE exportTo --metadata gdrive --updateFrom "$HOME/Downloads/spotify_playlists.zip" gdrive
+		rm "$HOME/Downloads/spotify_playlists.zip"
 		;;
-	updateGdrive)
+	updateGdriveSongs)
 		METADATA=gdrive
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
 		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
@@ -486,24 +505,22 @@ case "$1" in
 		#listDeletedFilesInFolder "$TEMP_DB" # and delete them so they aren't restoring on sync
 		deleteDeletedFilesInGdrive "$TEMP_DB"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
-		syncFolderWithGdrive "$FOLDER"
+		upSyncFolderWithGdrive "$FOLDER"
 		;;
 	download)
+		downSyncFolderWithGdrive "$FOLDER"
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
 		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
 		downloadDbToFolder "$TEMP_DB" "$FOLDER"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
-		[ "$GDRIVE" ] && syncFolderWithGdrive "$FOLDER"
+		[ "$GDRIVE" ] && upSyncFolderWithGdrive "$FOLDER"
 		;;
 	exportTo)
 		[ -z "$CONTINUE" ] && convertFromXToDb "$METADATA" "$TEMP_DB"
 		[ "$UPDATE_FROM" ] && updateDbFromZip "$TEMP_DB" "$UPDATE_FROM"
 		convertFromDbToX "$TEMP_DB" "$2"
 		;;
-	'')
-		${BASH_SOURCE[0]} updateGdrive
-		;;
-	*)
+	''|*)
 		showHelp
 		exit 1
 		;;
