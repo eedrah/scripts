@@ -289,6 +289,7 @@ updateDbFromZip() (
 			FROM new.songs ns 
 			LEFT JOIN songs bs 
 			ON ns.spotifyUri = bs.spotifyUri 
+			AND bs.playlist = ns.playlist
 			WHERE bs.spotifyUri IS NULL;
 			
 			-- Delete rows that have spotifyUri in base, but not in new
@@ -298,6 +299,7 @@ updateDbFromZip() (
 			    FROM songs bs 
 			    LEFT JOIN new.songs ns 
 			    ON bs.spotifyUri = ns.spotifyUri 
+				AND bs.playlist = ns.playlist
 			    WHERE ns.spotifyUri IS NULL
 			);
 			
@@ -375,6 +377,22 @@ deleteDeletedFilesInGdrive() (
 			gdrive delete "$id"
 		fi
 	done < <(listAllGdriveFilesData) || true
+)
+
+deleteDeletedFilesInFolder() (
+	DB="$1"
+	FOLDER="$2"
+	for filepath in "$FOLDER"/*/*; do
+		[ ! -f "$filepath" ] && continue
+		filename="$(basename -- "$filepath")"
+		fileExistsInDatabase=$(sqlite3 "$DB" "SELECT 1 FROM songs WHERE filename = '$filename'")
+		if [ -z "$fileExistsInDatabase" ]; then
+			rm "$filepath"
+		fi
+	done
+
+	# Delete empty folders
+	find "$FOLDER" -type d -empty -delete
 )
 
 getGdriveField() (
@@ -492,6 +510,9 @@ do true; done
 set -- "${POSITIONAL[@]}"
 
 case "$1" in
+	test)
+		#deleteDeletedFilesInFolder "$TEMP_DB" "$FOLDER"
+		;;
 	updateGdriveMetadata)
 		downloadSpotifyPlaylists
 		$BASH_SOURCE exportTo --metadata gdrive --updateFrom "$HOME/Downloads/spotify_playlists.zip" gdrive
@@ -504,6 +525,7 @@ case "$1" in
 		downloadMissingGdriveFilesToFolder "$TEMP_DB" "$FOLDER"
 		#listDeletedFilesInFolder "$TEMP_DB" # and delete them so they aren't restoring on sync
 		deleteDeletedFilesInGdrive "$TEMP_DB"
+		deleteDeletedFilesInFolder "$TEMP_DB"
 		convertFromDbToX "$TEMP_DB" "$METADATA"
 		upSyncFolderWithGdrive "$FOLDER"
 		;;
