@@ -1,0 +1,38 @@
+#! /bin/bash
+set -eo pipefail
+#IFS="$(printf '\n\t')"
+#cd "$(dirname "${BASH_SOURCE[0]}")"
+
+DIR="$(mktemp -d)"
+cd "$DIR"
+
+for profile in 'Default' 'Profile 1' 'Profile 2'; do
+	cp "$HOME/Library/Application Support/Google/Chrome/$profile/Web Data" "$DIR/$profile"
+	sqlite3 "$DIR/$profile" <<- EOF
+		.mode insert
+		.output '$profile.data'
+		SELECT short_name, keyword, url, favicon_url
+			FROM keywords
+			WHERE keyword NOT LIKE '%.%'
+		;
+	EOF
+	sed 's/table/keyword/' "$profile.data" | sort > "$profile.data.sorted"
+	rm "$profile" "$profile.data"
+done
+
+for profile1 in 'Default' 'Profile 1' 'Profile 2'; do
+	for profile2 in 'Default' 'Profile 1' 'Profile 2'; do
+		if [ "$profile1" == "$profile2" ]; then
+			continue
+		fi
+
+		set +e
+		diff --changed-group-format='%>' --unchanged-group-format='' "$profile1.data.sorted" "$profile2.data.sorted" > "$profile1-for-$profile2.sql"
+		set -e
+	done
+done
+rm *.sorted
+
+echo "Finished"
+echo "Close Chrome and then cd to the below directory and run the sql scripts"
+echo "cd $DIR"
