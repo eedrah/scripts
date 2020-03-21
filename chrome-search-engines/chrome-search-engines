@@ -10,33 +10,66 @@ TEMP_DIR="$(mktemp -d)"
 cd "$TEMP_DIR"
 
 profiles=$(cd "$CHROME_DIR" && ls -d Default 'Profile '*)
+index=0
 for profile in $profiles; do
-	cp "$CHROME_DIR/$profile/Web Data" "$TEMP_DIR/$profile"
-	sqlite3 "$TEMP_DIR/$profile" <<- EOF
-		.mode insert
-		.output '$profile.data'
-		SELECT short_name, keyword, url, favicon_url
-			FROM keywords
-			WHERE keyword NOT LIKE '%.%'
+	index=$((index + 1))
+	#echo "$profile has index $index"
+	cp "$CHROME_DIR/$profile/Web Data" "$TEMP_DIR/$index.db"
+done
+
+columns=$(sqlite3 1.db <<< ".separator ROW ', '
+	SELECT name 
+		FROM PRAGMA_TABLE_INFO('keywords') 
+		WHERE name != 'id' 
+			AND name != 'created_from_play_api'
+	;")
+columns=$(echo ${columns%??})
+
+command="$(cat <<- EOF
+	.output inserts.sql
+	.mode insert keywords
+	$(sqlite3 1.db <<< ".schema keywords")
+	;
+EOF
+)"
+for i in $(seq 1 $index); do
+	command+="$(cat <<- EOF
+		ATTACH DATABASE '$i.db' AS db$i;
+		INSERT INTO keywords($columns) SELECT $columns FROM db$i.keywords;
 		;
 	EOF
-	sed 's/table/keyword/' "$profile.data" | sort > "$profile.data.sorted"
-	rm "$profile" "$profile.data"
+	)"
 done
 
-for profile1 in $profiles; do
-	for profile2 in $profiles; do
-		if [ "$profile1" == "$profile2" ]; then
-			continue
-		fi
+command+="$(cat <<- EOF
+	SELECT * 
+		FROM keywords 
+		WHERE keyword NOT LIKE '%.%'
+		GROUP BY keyword
+		HAVING MIN(id)
+		ORDER BY keyword
+	;
+EOF
+)"
 
-		set +e
-		diff --changed-group-format='%>' --unchanged-group-format='' "$profile1.data.sorted" "$profile2.data.sorted" > "$profile2-for-$profile1.sql"
-		set -e
-	done
+sqlite3 <<< "$command"
+
+cat - inserts.sql > commands.sql <<< "DELETE FROM keywords;"
+rm inserts.sql
+
+
+echo "SQL script created in:"
+echo "$TEMP_DIR"
+echo "Ctrl-C now to exit, or press any key to continue to edit the insert SQL script."
+read
+
+vim "$TEMP_DIR/commands.sql"
+
+echo "Ctrl-C now to exit, or exit Chrome and press any key to overwrite all profiles search engines with the SQL script."
+read
+
+for profile in $profiles; do
+	profileName="$(jq ".profile.info_cache[\"$profile\"].name" "$CHROME_DIR/Local State")"
+	echo "Overwriting search engines for $profile with name $profileName..."
+	sqlite3 "$CHROME_DIR/$profile/Web Data" < $TEMP_DIR/commands.sql
 done
-rm *.sorted
-
-echo "Finished"
-echo "Close Chrome and then cd to the below directory and run the sql scripts"
-echo "cd $TEMP_DIR"
